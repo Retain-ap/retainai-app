@@ -1,0 +1,20 @@
+{
+  "mateozufic1@gmail.com": [
+    {
+      "id": "aec8de7a-0d0e-4fc3-a096-2cd1211baaa5",
+      "lead_email": "mateo.zuf23@gmail.com",
+      "lead_first_name": "marko",
+      "user_name": "Mateo Zufic",
+      "user_email": "mateozufic1@gmail.com",
+      "business_name": "jaivio nails",
+      "appointment_time": "2025-08-31T16:00:00",
+      "appointment_location": "TBD",
+      "duration": 30,
+      "notes": "Auto-created from WhatsApp confirmation",
+      "done": true,
+      "is_done": true,
+      "completed": true,
+      "status": "completed"
+    }
+  ]
+}

@@ -1,0 +1,140 @@
+{
+  "mateozufic1@gmail.com": [
+    {
+      "createdAt": "2025-08-21T01:49:16.511Z",
+      "days_since_contact": 0,
+      "email": "sdas@wqed",
+      "id": 1755740956511,
+      "last_contacted": "2025-08-21T01:49:16.511Z",
+      "name": "eafasd",
+      "notes": "",
+      "phone": "",
+      "status": "active",
+      "status_color": "#1bc982",
+      "tags": [],
+      "updates": []
+    },
+    {
+      "appointments": [
+        {
+          "date": "2025-08-23",
+          "done": true,
+          "time": "00:45",
+          "title": "wef"
+        }
+      ],
+      "createdAt": "2025-08-21T01:00:29.829Z",
+      "days_since_contact": 0,
+      "email": "yguqwyuhwe@gmail.com",
+      "id": 1755738029829,
+      "last_contacted": "2025-08-21T01:00:29.829Z",
+      "name": "werwer",
+      "notes": "",
+      "phone": "",
+      "status": "active",
+      "status_color": "#1bc982",
+      "tags": [],
+      "updates": []
+    },
+    {
+      "createdAt": "2025-08-21T00:59:08.837Z",
+      "days_since_contact": 0,
+      "email": "dsauhb@gmile.com",
+      "id": 1755737948837,
+      "last_contacted": "2025-08-21T00:59:08.837Z",
+      "name": "asdas",
+      "notes": "",
+      "phone": "",
+      "status": "active",
+      "status_color": "#1bc982",
+      "tags": [],
+      "updates": []
+    },
+    {
+      "id": "992b9c95-0eca-4e2b-981f-bd5e22008342",
+      "name": "kindle scoot",
+      "email": "mate.zufi23@gmail.com",
+      "emails": [
+        "mate.zufi23@gmail.com"
+      ],
+      "phone": "(226) 201-7342",
+      "phones": [
+        "(226) 201-7342"
+      ],
+      "company": null,
+      "title": null,
+      "notes": "good lady",
+      "birthday": null,
+      "tags": [
+        "Imported"
+      ],
+      "source": "google",
+      "external_id": "people/c3864466686730665011",
+      "createdAt": "2025-08-22T00:10:08Z",
+      "last_contacted": "2025-08-22T00:10:08Z",
+      "owner": "mateozufic1@gmail.com"
+    },
+    {
+      "id": "fe5fcff8-d474-49c0-85ec-ff56b99a4d8c",
+      "name": "marko urois",
+      "email": "mateo.zuf23@gmail.com",
+      "emails": [
+        "mateo.zuf23@gmail.com"
+      ],
+      "phone": "(226) 201-4738",
+      "phones": [
+        "(226) 201-4738"
+      ],
+      "company": null,
+      "title": null,
+      "notes": "great guy",
+      "birthday": "1999-08-21",
+      "tags": [
+        "Imported"
+      ],
+      "source": "google",
+      "external_id": "people/c5047542795900446400",
+      "createdAt": "2025-08-22T00:10:08Z",
+      "last_contacted": "2025-08-22T00:10:08Z",
+      "owner": "mateozufic1@gmail.com",
+      "appointments": [
+        {
+          "title": "Auto-created from WhatsApp confirmation",
+          "date": "2025-08-22",
+          "time": "15:00",
+          "done": false
+        },
+        {
+          "title": "Auto-created from WhatsApp confirmation",
+          "date": "2025-08-22",
+          "time": "15:00",
+          "done": false
+        },
+        {
+          "title": "Auto-created from WhatsApp confirmation",
+          "date": "2025-08-22",
+          "time": "15:00",
+          "done": false
+        },
+        {
+          "title": "Auto-created from WhatsApp confirmation",
+          "date": "2025-08-22",
+          "time": "15:00",
+          "done": false
+        },
+        {
+          "title": "Auto-created from WhatsApp confirmation",
+          "date": "2025-08-22",
+          "time": "15:00",
+          "done": false
+        },
+        {
+          "title": "Auto-created from WhatsApp confirmation",
+          "date": "2025-08-22",
+          "time": "15:00",
+          "done": false
+        }
+      ]
+    }
+  ]
+}

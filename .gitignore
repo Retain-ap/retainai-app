@@ -1,0 +1,16 @@
+# venv / builds
+venv/
+__pycache__/
+*.pyc
+
+# env & tokens
+.env
+google_tokens.json
+users.json
+users_profiles.json
+notifications.json
+whatsapp_*.json
+*_tokens.json
+
+# node
+node_modules/

@@ -1,0 +1,11 @@
+Flask==2.3.3
+Flask-Cors==4.0.0
+Flask-APScheduler==1.13.1
+python-dotenv==1.0.1
+sendgrid==6.11.0
+stripe==8.6.0
+pywebpush==1.14.0
+google-auth==2.29.0
+requests==2.32.3
+waitress==2.1.2
+gunicorn==21.2.0

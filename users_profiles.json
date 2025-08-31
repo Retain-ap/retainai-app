@@ -1,0 +1,10 @@
+{
+  "users": {
+    "mateozufic1@gmail.com": {
+      "business_name": "RetainAI Demo",
+      "booking_link": "https://cal.com/retainai/demo",
+      "quiet_hours_start": 21,
+      "quiet_hours_end": 8
+    }
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "users": {
+    "mateozufic1@gmail.com": [
+      {
+        "auto_stop_on_reply": true,
+        "caps": {
+          "per_lead_per_day": 1,
+          "respect_quiet_hours": true
+        },
+        "enabled": false,
+        "name": "Cold Lead Recovery",
+        "steps": [
+          {
+            "type": "ai_draft"
+          },
+          {
+            "text": "{{last_ai_text}}",
+            "type": "send_whatsapp",
+            "template": {
+              "name": "",
+              "language": "en_US",
+              "params": ""
+            }
+          },
+          {
+            "days": 2,
+            "type": "wait"
+          },
+          {
+            "then": [
+              {
+                "body": "hi {{lead.first_name}}. just checking in",
+                "html": "<p>Quick check-in — want to grab a spot with {{business_name}}? <a href='{{booking_link}}'>Book here</a>.</p>",
+                "subject": "We still here?",
+                "type": "send_email"
+              }
+            ],
+            "type": "if_no_reply",
+            "within_days": 2
+          }
+        ],
+        "trigger": {
+          "days": 3,
+          "type": "no_reply"
+        },
+        "owner": "mateozufic1@gmail.com",
+        "id": "df8c048f-a404-4116-aa68-094093de1456"
+      }
+    ]
+  }
+}
