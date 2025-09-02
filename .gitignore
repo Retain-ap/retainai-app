@@ -14,3 +14,5 @@ whatsapp_*.json
 
 # node
 node_modules/
+retainai-frontend-clean/node_modules/
+retainai-frontend-clean/build/

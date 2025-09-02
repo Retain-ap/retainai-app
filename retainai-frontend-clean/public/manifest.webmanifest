@@ -1,0 +1,19 @@
+// public/manifest.webmanifest
+{
+  "id": "/",
+  "name": "RetainAI",
+  "short_name": "RetainAI CRM",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0f1115",
+  "theme_color": "#0f1115",
+  "icons": [
+    { "src": "/logo192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/logo512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "screenshots": [
+    { "src": "/screenshots/desktop-1280x800.png", "sizes": "1280x800", "type": "image/png", "form_factor": "wide" },
+    { "src": "/screenshots/mobile-750x1334.png", "sizes": "750x1334", "type": "image/png" }
+  ]
+}

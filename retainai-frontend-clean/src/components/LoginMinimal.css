@@ -1,0 +1,174 @@
+.minimal-login-bg {
+  min-height: 100vh;
+  min-width: 100vw;
+  width: 100vw;
+  height: 100vh;
+  position: fixed;
+  top: 0; left: 0;
+  background: #1a1a1a;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  overflow: hidden;
+}
+
+.minimal-swirl-bg {
+  position: absolute;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 0;
+  background: linear-gradient(135deg, #212121 0%, #2d2a33 100%);
+  opacity: 1;
+  pointer-events: none;
+}
+
+.minimal-login-center-card {
+  position: relative;
+  z-index: 1;
+  background: #181818e6;
+  border-radius: 28px;
+  box-shadow: 0 6px 48px #0006;
+  padding: 48px 40px 34px 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 370px;
+  max-width: 96vw;
+  width: 100%;
+}
+
+.minimal-login-logo {
+  width: 92px;
+  height: 92px;
+  margin-bottom: 16px;
+  border-radius: 50%;
+  background: #fff;
+  object-fit: cover;
+  box-shadow: 0 3px 15px #0002;
+  display: block;
+}
+
+.minimal-login-title {
+  margin-bottom: 10px;
+  color: #f7cb53;
+  font-size: 2.1em;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  text-align: center;
+}
+
+.minimal-login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  margin-top: 10px;
+  width: 100%;
+}
+
+.minimal-login-form input,
+.profile-slide-form input {
+  padding: 13px 13px;
+  border-radius: 10px;
+  border: 1.5px solid #292929;
+  font-size: 1.08em;
+  background: #222224;
+  color: #f7cb53;
+  outline: none;
+  transition: border 0.18s;
+}
+.minimal-login-form input:focus,
+.profile-slide-form input:focus {
+  border: 1.5px solid #f7cb53;
+}
+.profile-slide-form input[type="file"] { padding: 0; }
+
+.minimal-login-btn {
+  background: #f7cb53;
+  color: #101010;
+  font-weight: 700;
+  border: none;
+  border-radius: 10px;
+  padding: 14px 0;
+  font-size: 1.16em;
+  margin-top: 7px;
+  cursor: pointer;
+  transition: background 0.14s;
+}
+.minimal-login-btn:hover {
+  background: #ffe09b;
+}
+
+.minimal-google-btn {
+  background: #fff;
+  color: #232323;
+  font-weight: 600;
+  border: none;
+  border-radius: 10px;
+  padding: 11px 0;
+  font-size: 1.08em;
+  margin-top: 13px;
+  margin-bottom: 8px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  box-shadow: 0 3px 9px #0001;
+  transition: background 0.14s;
+}
+.minimal-google-btn:hover {
+  background: #f7f7f7;
+}
+
+.minimal-login-toggle {
+  margin-top: 18px;
+  font-size: 1.06em;
+  color: #eee;
+  text-align: center;
+}
+.minimal-login-link {
+  color: #38ff98;
+  cursor: pointer;
+  font-weight: 700;
+  margin-left: 4px;
+  text-decoration: underline;
+}
+
+.minimal-login-error {
+  background: #e66565d2;
+  color: #fff;
+  border-radius: 7px;
+  padding: 7px 10px;
+  margin-bottom: 5px;
+  margin-top: -8px;
+  font-size: 0.97em;
+  text-align: center;
+}
+
+.profile-slide-form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.slide-step { width: 100%; }
+.slide-progress {
+  margin-top: 22px;
+  display: flex;
+  gap: 11px;
+  justify-content: center;
+}
+.slide-dot {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #f7cb53;
+  opacity: 0.4;
+  transition: opacity 0.2s;
+}
+.slide-dot.active {
+  opacity: 1;
+}

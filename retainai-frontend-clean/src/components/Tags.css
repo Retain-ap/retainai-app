@@ -1,0 +1,61 @@
+.tags-wrap {
+  display: flex;
+  flex-wrap: wrap; /* allow wrapping! */
+  align-items: flex-start;
+  gap: 9px;
+  margin-bottom: 4px;
+}
+.tags-selected {
+  display: flex;
+  flex-wrap: wrap; /* allow wrapping! */
+  gap: 7px;
+  width: 100%;
+}
+.tag-chip {
+  background: #101010;
+  color: #f7cb53;
+  border-radius: 7px;
+  padding: 3.5px 11px;
+  font-weight: 600;
+  font-size: 1em;
+  cursor: pointer;
+  margin-right: 2px;
+  margin-bottom: 4px; /* adds vertical spacing for wrapped rows */
+  transition: background 0.13s, color 0.13s;
+}
+.tag-chip.selected {
+  background: #f7cb53;
+  color: #101010;
+}
+.tags-select {
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 1em;
+  border: 1.2px solid #f7cb53;
+  background: #fff;
+  color: #222;
+  outline: none;
+}
+.tags-input {
+  border-radius: 6px;
+  padding: 6px 7px;
+  border: 1.2px solid #f7cb53;
+  font-size: 1em;
+  width: 82px;
+  margin-left: 5px;
+}
+.tags-add {
+  background: #f7cb53;
+  color: #101010;
+  font-weight: bold;
+  border-radius: 7px;
+  border: none;
+  font-size: 1.13em;
+  padding: 3px 13px;
+  cursor: pointer;
+  margin-left: 2px;
+  transition: background 0.14s;
+}
+.tags-add:hover {
+  background: #f2b100;
+}

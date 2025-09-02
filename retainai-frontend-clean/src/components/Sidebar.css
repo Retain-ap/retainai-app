@@ -1,0 +1,190 @@
+/* Sidebar */
+.sidebar {
+  width: 245px;
+  background: linear-gradient(180deg, #18181b 0%, #232323 100%);
+  color: #fff;
+  min-height: 100vh;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  position: fixed;
+  top: 0; left: 0;
+  z-index: 200;
+  box-shadow: 2px 0 24px #0007;
+  border-right: 1.5px solid #232323;
+  transition: width 0.22s;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.sidebar.collapsed { width: 60px; }
+
+/* Toggle */
+.sidebar-toggle {
+  position: absolute;
+  top: 18px;
+  right: -17px;
+  background: #232323;
+  border-radius: 50%;
+  color: #fff;
+  border: none;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 1px 5px #0003;
+  z-index: 100;
+}
+
+/* Profile */
+.sidebar-profile {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  width: 100%;
+  padding: 22px 15px 15px 15px;
+  cursor: pointer;
+  position: relative;
+  min-height: 65px;
+  margin-bottom: 7px;
+  border-radius: 11px;
+  margin-left: 6px;
+  margin-right: 6px;
+  background: #202124;
+  box-shadow: 0 2.5px 12px #18181b0a;
+}
+.sidebar-profile:hover { background: #232324; }
+.sidebar-avatar, .sidebar-avatar-initials {
+  width: 38px; height: 38px; border-radius: 50%;
+  background: #fff; object-fit: cover;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.9em; font-weight: 700; color: #232323;
+  box-shadow: 0 1.5px 10px #0001;
+}
+.sidebar-avatar-initials { background: #e8e8e8; }
+.sidebar-profile-info { display: flex; flex-direction: column; min-width: 0; }
+.sidebar-profile-name {
+  font-weight: 700; color: #fff; font-size: 1.03em; margin-bottom: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 155px;
+}
+.sidebar-profile-email {
+  color: #b8b8b8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 155px; font-size: 0.96em; font-weight: 500;
+}
+
+/* Dropdown */
+.sidebar-dropdown-card {
+  position: absolute;
+  left: 50%; transform: translateX(-50%); top: 52px;
+  background: #232323; border-radius: 14px;
+  box-shadow: 0 8px 24px #000b, 0 1.5px 0px #232323;
+  min-width: 205px; max-width: 235px;
+  display: flex; flex-direction: column;
+  z-index: 999; padding: 8px 0 13px 0; border: none;
+  animation: sidebarDropdownIn 0.16s cubic-bezier(.65,1.7,.3,1);
+  font-size: 1em; filter: drop-shadow(0 3px 16px #000b);
+}
+@keyframes sidebarDropdownIn {
+  from { opacity: 0; transform: translate(-50%, -12px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+.dropdown-header {
+  padding: 6px 20px 10px 20px; font-weight: 700; color: #fff; font-size: 1.07em;
+  border-bottom: 1px solid #262628; text-align: center;
+}
+.dropdown-title {
+  color: #fff; font-weight: 700; margin-bottom: 1px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; max-width: 195px; text-align: center; margin: 0 auto;
+}
+.dropdown-email {
+  color: #aaa; font-size: 0.96em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 400; margin-top: 1px; max-width: 195px; text-align: center; margin: 0 auto;
+}
+.dropdown-row {
+  display: flex; justify-content: space-between; align-items: center;
+  color: #ccc; font-size: 0.98em; padding: 8px 20px 4px 20px; margin-bottom: 1.5px;
+}
+.dropdown-label { color: #e6e6e6; font-size: 1em; margin-right: 8px; font-weight: 600; }
+.dropdown-value { color: #fff; font-weight: 600; max-width: 105px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+.dropdown-btn {
+  background: #252525; color: #f1f1f1; border: none; text-align: left; padding: 10px 20px;
+  font-size: 1em; border-radius: 8px; margin: 8px 18px 0 18px; font-weight: 600;
+  display: flex; align-items: center; gap: 10px; transition: background 0.12s, color 0.12s;
+  box-shadow: none; justify-content: center;
+}
+.dropdown-btn.logout { background: #f16666; color: #fff; margin-top: 14px; border-radius: 8px; font-weight: 700; }
+.dropdown-btn.logout:hover { background: #c63232; color: #fff; }
+.dropdown-btn:hover { background: #232328; color: #fff; }
+
+/* Navigation */
+.sidebar-nav {
+  display: flex; flex-direction: column;
+  width: 100%;
+  margin-top: 17px;
+  padding-bottom: 170px; /* extra space so bottom buttons never overlap */
+}
+.sidebar-nav button {
+  background: none; border: none; color: #fff; font-size: 1.07em;
+  padding: 12px 0 12px 25px; text-align: left; width: 100%; cursor: pointer;
+  display: flex; align-items: center; gap: 13px; border-radius: 8px; margin: 2px 7px 2px 7px;
+  transition: background 0.13s, color 0.13s;
+}
+.sidebar-nav button.active,
+.sidebar-nav button:hover { background: #232324; color: #fff; font-weight: 800; }
+
+/* Invite Team (pinned above Settings) */
+.sidebar-invite-btn {
+  position: absolute;
+  left: 0; right: 0;
+  bottom: 88px;                /* moved up a bit to avoid overlap */
+  margin: 0 12px;
+  padding: 13px 22px;
+  width: calc(100% - 24px);
+  background: linear-gradient(180deg, #ffd166 0%, #f6c144 100%);
+  color: #1a1a1a;
+  border-radius: 9px;
+  font-size: 1.07em;
+  font-weight: 800;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;     /* centered text */
+  gap: 9px;
+  cursor: pointer;
+  transition: filter 0.15s, transform 0.05s, box-shadow 0.15s;
+  box-shadow: 0 6px 18px rgba(255,209,102,0.24), inset 0 -2px 0 rgba(0,0,0,0.20);
+}
+.sidebar-invite-btn:hover {
+  filter: brightness(1.02);
+  box-shadow: 0 8px 22px rgba(255,209,102,0.32), inset 0 -2px 0 rgba(0,0,0,0.25);
+}
+.sidebar-invite-btn:active { transform: translateY(1px); }
+
+/* Settings Button (pinned bottom) */
+.sidebar-settings-btn {
+  margin: auto 12px 24px 12px;
+  padding: 13px 22px;
+  background: #18181b;
+  border-radius: 9px;
+  color: #ddd;
+  font-size: 1.07em;
+  font-weight: 600;
+  border: none;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+  transition: background 0.13s, color 0.13s;
+  box-shadow: 0 2px 12px #0f0f0f15;
+  justify-content: center;     /* centered text */
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  width: calc(100% - 24px);
+}
+.sidebar-settings-btn:hover { background: #232328; color: #fff; }
+
+/* Hide bottom buttons when collapsed (optional) */
+.sidebar.collapsed .sidebar-invite-btn,
+.sidebar.collapsed .sidebar-settings-btn { display: none; }

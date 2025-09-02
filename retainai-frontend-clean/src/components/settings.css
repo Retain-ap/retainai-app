@@ -1,0 +1,435 @@
+.settings-layout {
+  position: absolute;
+  top: 0;
+  min-height: 100vh;
+  display: flex;
+  background: linear-gradient(120deg, #18181b 0%, #232325 100%);
+  transition: left 0.25s, width 0.25s;
+  z-index: 1;
+}
+
+.settings-nav {
+  width: 250px;
+  background: #1b1b1f;
+  border-right: 1.5px solid #222;
+  padding-top: 60px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 2px 0 24px #0003;
+}
+
+.settings-nav button {
+  border: none;
+  background: none;
+  padding: 20px 32px;
+  color: #d8d8d8;
+  font-size: 1.05em;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  border-left: 3px solid transparent;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.settings-nav button:hover {
+  background: #222;
+}
+
+.settings-nav button.active {
+  background: #222;
+  color: #fff;
+  border-left-color: #fff;
+}
+
+.settings-icon { font-size: 1.2em; }
+.settings-label { letter-spacing: 0.02em; }
+
+.settings-content {
+  flex: 1;
+  padding: 60px 64px 44px;
+  overflow-y: auto;
+  color: #eee;
+}
+.settings-content h2 {
+  font-size: 2.2em;
+  font-weight: 800;
+  margin-bottom: 24px;
+  color: #fff;
+}
+
+/* Profile tab */
+.profile-tab .profile-card {
+  display: flex;
+  background: #232325;
+  border-radius: 12px;
+  padding: 24px;
+  gap: 32px;
+  max-width: 800px;
+}
+.profile-card .avatar {
+  width: 80px;
+  height: 80px;
+  background: #191a1d;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.5em;
+  box-shadow: 0 3px 14px #0004;
+  overflow: hidden;
+}
+.profile-card .avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.profile-fields { flex: 1; }
+.field-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 14px;
+}
+.field-label {
+  width: 120px;
+  color: #aaa;
+  font-weight: 600;
+}
+.field-value { color: #fff; }
+.field-input {
+  flex: 1;
+  background: #18181b;
+  border: 1px solid #333;
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #fff;
+}
+
+.profile-actions {
+  margin-top: 24px;
+  display: flex;
+  gap: 12px;
+}
+.btn {
+  padding: 10px 24px;
+  border: none;
+  border-radius: 8px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.btn-edit   { background: #635bff; color: #fff; }
+.btn-save   { background: #38c174; color: #fff; }
+.btn-cancel { background: #e66565; color: #fff; }
+
+/* Integrations */
+.integration-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+}
+.integration-card {
+  background: #191a1d;
+  border-radius: 12px;
+  padding: 24px;
+  min-width: 300px;
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  box-shadow: 0 2px 12px #0002;
+}
+.integration-icon {
+  font-size: 2em;
+  margin-right: 16px;
+}
+.integration-icon.google    { color: #4285f4; }
+.integration-icon.whatsapp  { color: #25D366; }
+.integration-icon.instagram { color: #E4405F; }
+.integration-body { flex: 1; }
+.integration-title {
+  font-size: 1.1em;
+  font-weight: 700;
+  color: #fff;
+}
+.integration-desc {
+  color: #aaa;
+  font-size: 0.94em;
+  margin: 4px 0 12px;
+}
+.integration-status { font-size: 0.95em; color: #f7cb53; }
+.integration-status.success { color: #38c174; }
+.coming-soon {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Help & Support */
+.help-line {
+  margin: 8px 0;
+  color: #ffffff;
+}
+.help-link {
+  color: #4285f4;
+  text-decoration: underline;
+}
+
+/* Fade-in animation */
+.fade-in {
+  animation: fadeInRight 0.44s cubic-bezier(.63,.04,.36,1) 1;
+}
+@keyframes fadeInRight {
+  0% { opacity: 0; transform: translateX(50px); }
+  100% { opacity: 1; transform: translateX(0); }
+}
+
+/* ─────────────────────────────────────────────────────────────── */
+/* StripeConnectCard button styles (added for polished look)      */
+/* ─────────────────────────────────────────────────────────────── */
+.integration-card .settings-btn {
+  display: inline-block;
+  padding: 10px 20px;
+  margin-top: 8px;
+  border: none;
+  border-radius: 6px;
+  background-color: #635bff;
+  color: #fff;
+  font-size: 0.95em;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+}
+.integration-card .settings-btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+.integration-card .settings-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.integration-card .settings-btn.refresh {
+  background-color: #232323;
+  border: 1px solid #38ff98;
+  color: #38ff98;
+}
+.integration-card .settings-btn + .settings-btn {
+  margin-left: 8px;
+}
+.integration-card .integration-status {
+  margin-left: 12px;
+  font-size: 0.95em;
+  vertical-align: middle;
+}
+.integration-card.stripe-connected {
+  background-color: #1f1f21;
+}
+
+.integration-card-inner {
+  width: 100%;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.integration-center {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 0 18px;
+}
+
+.integration-title {
+  font-size: 1.11em;
+  font-weight: 600;
+  color: #f2f2f2;
+  margin-bottom: 3px;
+  margin-top: 2px;
+}
+
+.integration-desc {
+  font-size: 0.97em;
+  color: #b5b5c3;
+  text-align: left;
+  margin-bottom: 13px;
+  margin-top: 2px;
+  max-width: 260px;
+}
+
+.integration-btn,
+.integration-btn-outline {
+  padding: 12px 22px;
+  border-radius: 9px;
+  font-weight: 600;
+  font-size: 1.05em;
+  border: none;
+  outline: none;
+  transition: 0.16s box-shadow, 0.16s background;
+  cursor: pointer;
+}
+
+.integration-btn {
+  background: #4885ed;
+  color: #fff;
+  box-shadow: 0 2px 7px rgba(72,133,237,0.08);
+  border: none;
+}
+.integration-btn:hover:not([disabled]) {
+  background: #2967db;
+}
+.integration-btn:disabled {
+  background: #6ca0e9;
+}
+
+.integration-btn-outline {
+  background: transparent;
+  color: #4885ed;
+  border: 2px solid #4885ed;
+}
+.integration-btn-outline:hover:not([disabled]) {
+  background: #20253a;
+  color: #fff;
+  border-color: #4885ed;
+}
+.integration-btn-outline:disabled {
+  opacity: 0.6;
+}
+
+.integration-dot {
+  width: 12px;
+  height: 12px;
+  background: #43e07d;
+  border-radius: 50%;
+  margin-right: 8px;
+  display: inline-block;
+}
+.integration-connected {
+  color: #43e07d;
+  font-weight: 700;
+  margin-right: 6px;
+}
+
+.integration-select {
+  padding: 7px 14px;
+  font-weight: 600;
+  font-size: 1em;
+  background: #181a1b;
+  color: #fff;
+  border: 1.7px solid #3a73eb;
+  border-radius: 7px;
+  transition: border-color 0.16s;
+  outline: none;
+}
+.integration-select:focus {
+  border-color: #4885ed;
+}
+
+.integration-error {
+  color: #ff6565;
+  margin-top: 10px;
+  font-size: 0.99em;
+}
+
+.integration-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 36px;
+  margin-top: 20px;
+}
+.integration-card {
+  background: #191a1f;
+  border-radius: 19px;
+  box-shadow: 0 2px 18px #0a0b0f15;
+  padding: 32px 22px 36px 22px;
+  min-width: 320px;
+  max-width: 350px;
+  flex: 1 1 320px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 320px;
+}
+.integration-center {
+  width: 100%;
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.integration-title {
+  font-size: 1.18em;
+  font-weight: 600;
+  color: #fff;
+}
+.integration-desc {
+  color: #bbb;
+  font-size: 1em;
+  text-align: center;
+  margin-bottom: 13px;
+}
+.integration-btn,
+.integration-btn-outline {
+  font-weight: 700;
+  font-size: 1em;
+  padding: 13px 0;
+  border-radius: 9px;
+  width: 100%;
+  outline: none;
+  transition: background 0.16s, color 0.13s;
+}
+.integration-btn {
+  background: #4885ed;
+  color: #fff;
+  border: none;
+  margin-bottom: 0;
+}
+.integration-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+.integration-btn-outline {
+  background: #191919;
+  color: #4885ed;
+  border: 1.5px solid #4885ed;
+  margin-bottom: 0;
+}
+.integration-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  background: #43e07d;
+  border-radius: 100%;
+  margin-right: 7px;
+}
+.integration-connected {
+  color: #43e07d;
+  font-weight: 700;
+  font-size: 1.03em;
+}
+.integration-select {
+  background: #181a1b;
+  color: #fff;
+  border: 1.7px solid #3a73eb;
+  border-radius: 7px;
+  font-weight: 600;
+  padding: 7px 14px;
+}
+.integration-error {
+  margin-top: 14px;
+  color: #ff6565;
+  font-size: 1em;
+  text-align: center;
+}
+
+/* WhatsApp integration button styles */
+.wa-btn {
+  font-family: inherit;
+  outline: none;
+  transition: background 0.13s, color 0.13s, border 0.13s;
+}
+
+.wa-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
