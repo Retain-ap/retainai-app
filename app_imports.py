@@ -9,10 +9,23 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 
 # UNIQUE redirect URI for People/Contacts (avoid conflict with Calendar OAuth)
-# IMPORTANT: no localhost fallback in production; read from env only
-GOOGLE_PEOPLE_REDIRECT_URI = os.environ["GOOGLE_PEOPLE_REDIRECT_URI"]
+# IMPORTANT: No localhost fallback. Prefer explicit env; else derive from Render's public URL.
+GOOGLE_PEOPLE_REDIRECT_URI = (
+    os.environ.get("GOOGLE_PEOPLE_REDIRECT_URI")
+    or os.environ.get("GOOGLE_REDIRECT_URI")
+    or (
+        os.environ.get("RENDER_EXTERNAL_URL")
+        and os.environ["RENDER_EXTERNAL_URL"].rstrip("/") + "/api/google/people/oauth-callback"
+    )
+)
+if not GOOGLE_PEOPLE_REDIRECT_URI:
+    raise RuntimeError(
+        "GOOGLE_PEOPLE_REDIRECT_URI is not set. "
+        "Set it to your deployed callback, e.g. "
+        "https://api.retainai.ca/api/google/people/oauth-callback"
+    )
 
-# Prefer FRONTEND_BASE; fall back to FRONTEND_URL; then localhost
+# Prefer FRONTEND_BASE; fall back to FRONTEND_URL; then localhost for dev
 FRONTEND_BASE = (
     os.getenv("FRONTEND_BASE")
     or os.getenv("FRONTEND_URL")
