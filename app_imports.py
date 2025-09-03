@@ -9,10 +9,8 @@ GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 
 # UNIQUE redirect URI for People/Contacts (avoid conflict with Calendar OAuth)
-GOOGLE_PEOPLE_REDIRECT_URI = os.getenv(
-    "GOOGLE_PEOPLE_REDIRECT_URI",
-    "http://localhost:5000/api/google/people/oauth-callback",
-)
+# IMPORTANT: no localhost fallback in production; read from env only
+GOOGLE_PEOPLE_REDIRECT_URI = os.environ["GOOGLE_PEOPLE_REDIRECT_URI"]
 
 # Prefer FRONTEND_BASE; fall back to FRONTEND_URL; then localhost
 FRONTEND_BASE = (
