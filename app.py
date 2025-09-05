@@ -42,34 +42,30 @@ class Config:
 app = Flask(__name__)
 app.config.from_object(Config())
 
-# Allow prod + local; override in Render env if needed
+# Allowed origins from env, normalized (no trailing slash)
 ALLOWED_ORIGINS = [
-    o.strip() for o in os.getenv(
-        "ALLOWED_ORIGINS",
-        "https://app.retainai.ca,http://localhost:3000"
-    ).split(",") if o.strip()
+    o.strip().rstrip("/")
+    for o in os.getenv("ALLOWED_ORIGINS", "https://app.retainai.ca,http://localhost:3000").split(",")
+    if o.strip()
 ]
 
-# CORS for API routes
+# SINGLE Flask-CORS init (no other CORS(app, ...) calls anywhere)
 CORS(
     app,
     supports_credentials=True,
-    resources={r"/api/*": {
-        "origins": ALLOWED_ORIGINS,
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"],
-    }},
+    resources={
+        r"/api/*": {
+            "origins": ALLOWED_ORIGINS,
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"],
+        }
+    },
 )
 
-# OPTIONS preflight – succeed fast
-@app.route("/api/<path:_any>", methods=["OPTIONS"])
-def api_preflight(_any):
-    return ("", 204)
-
-# Ensure correct ACAO per request Origin; no hard-coded localhost
+# SINGLE after_request (remove any others)
 @app.after_request
 def add_cors_headers(resp):
-    origin = request.headers.get("Origin")
+    origin = (request.headers.get("Origin") or "").rstrip("/")
     if origin in ALLOWED_ORIGINS:
         resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Vary"] = "Origin"
