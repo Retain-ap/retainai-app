@@ -13,6 +13,7 @@ import os, json, re, hmac, hashlib, base64, datetime, urllib.parse, time, thread
 from uuid import uuid4
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, quote_plus
+from app_imports import FRONTEND_BASE
 
 from flask import Flask, request, jsonify, send_from_directory, redirect, Blueprint, make_response
 from flask_cors import CORS
@@ -41,30 +42,42 @@ class Config:
 app = Flask(__name__)
 app.config.from_object(Config())
 
-ALLOWED_ORIGINS = set(filter(None, (
-    os.environ.get("ALLOWED_ORIGINS", "").split(",")
-)))
-# defaults
-ALLOWED_ORIGINS.update({
-    "https://app.retainai.ca",
-    "http://localhost:3000"
-})
+# Allow prod + local; override in Render env if needed
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.getenv(
+        "ALLOWED_ORIGINS",
+        "https://app.retainai.ca,http://localhost:3000"
+    ).split(",") if o.strip()
+]
 
+# CORS for API routes
 CORS(
     app,
     supports_credentials=True,
-    resources={r"/api/*": {"origins": list(ALLOWED_ORIGINS)}}
+    resources={r"/api/*": {
+        "origins": ALLOWED_ORIGINS,
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+    }},
 )
 
-# Allow cookies from frontend (credentials)
-CORS(app, resources={r"/*": {"origins": [FRONTEND_URL]}}, supports_credentials=True)
+# OPTIONS preflight – succeed fast
+@app.route("/api/<path:_any>", methods=["OPTIONS"])
+def api_preflight(_any):
+    return ("", 204)
 
+# Ensure correct ACAO per request Origin; no hard-coded localhost
 @app.after_request
-def _after(resp):
-    # Extra headers in case a proxy strips CORS
-    resp.headers["Access-Control-Allow-Origin"] = FRONTEND_URL
-    resp.headers["Access-Control-Allow-Credentials"] = "true"
-    resp.headers.setdefault("Vary", "Origin")
+def add_cors_headers(resp):
+    origin = request.headers.get("Origin")
+    if origin in ALLOWED_ORIGINS:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        resp.headers["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE,OPTIONS"
+    else:
+        resp.headers.pop("Access-Control-Allow-Origin", None)
     return resp
 
 # Simple cookie signing for a lightweight session (email + timestamp)
@@ -372,7 +385,7 @@ def send_warning_summary_email(user_email, warning_leads, interval):
     dynamic_data = {
         "user_name": user_name,
         "lead_list": lead_list_html,
-        "crm_link": f"{FRONTEND_URL}/app/dashboard",
+        "crm_link": f"{FRONTEND_BASE}/app/dashboard",
         "year": datetime.datetime.now().year,
         "interval": interval,
         "count": len(warning_leads)
@@ -637,8 +650,8 @@ def get_stripe_connect_url():
     users[user_email]["stripe_account_id"] = acct.id
     users[user_email]["stripe_connected"]  = False  # <-- FIX: only true after OAuth callback
     save_users(users)
-    return_url  = f"{FRONTEND_URL}/app?stripe_connected=1"
-    refresh_url = f"{FRONTEND_URL}/app?stripe_refresh=1"
+    return_url  = f"{FRONTEND_BASE}/app?stripe_connected=1"
+    refresh_url = f"{FRONTEND_BASE}/app?stripe_refresh=1"
     link = stripe.AccountLink.create(
         account=acct.id,
         refresh_url=refresh_url,
@@ -684,7 +697,7 @@ def stripe_oauth_callback():
     error      = request.args.get("error")
     error_desc = request.args.get("error_description", "")
     user_email = request.args.get("state")
-    frontend   = FRONTEND_URL
+    frontend = FRONTEND_BASE
     if error:
         msg = urllib.parse.quote_plus(error_desc)
         return redirect(f"{frontend}/app?stripe_error=1&stripe_error_desc={msg}")
@@ -943,8 +956,8 @@ def signup():
             line_items=[{'price': STRIPE_PRICE_ID, 'quantity': 1}],
             customer_email=email,
             subscription_data={'trial_period_days': 14, 'metadata': {'user_email': email}},
-            success_url=f"{FRONTEND_URL}/login?paid=1",
-            cancel_url=f"{FRONTEND_URL}/login?canceled=1",
+            success_url=f"{FRONTEND_BASE}/login?paid=1",
+            cancel_url=f"{FRONTEND_BASE}/login?canceled=1",
         )
         resp = jsonify({'checkoutUrl': session.url})
         _set_session_cookie(resp, email)  # set cookie so frontend can pick it up

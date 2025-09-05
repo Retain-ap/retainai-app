@@ -4,6 +4,17 @@ import os, time, json, requests, hashlib
 from urllib.parse import urlencode
 from uuid import uuid4
 
+import os
+
+# Prefer FRONTEND_BASE; fall back to FRONTEND_URL; then localhost for dev
+FRONTEND_BASE = (
+    os.getenv("FRONTEND_BASE")
+    or os.getenv("FRONTEND_URL")
+    or "http://localhost:3000"
+)
+
+API_BASE = os.getenv("API_BASE") or os.getenv("RENDER_EXTERNAL_URL") or "http://localhost:5000"
+
 # ---------- Config ----------
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
