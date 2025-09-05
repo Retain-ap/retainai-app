@@ -41,8 +41,20 @@ class Config:
 app = Flask(__name__)
 app.config.from_object(Config())
 
-# Frontend origin for CORS/cookies
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+ALLOWED_ORIGINS = set(filter(None, (
+    os.environ.get("ALLOWED_ORIGINS", "").split(",")
+)))
+# defaults
+ALLOWED_ORIGINS.update({
+    "https://app.retainai.ca",
+    "http://localhost:3000"
+})
+
+CORS(
+    app,
+    supports_credentials=True,
+    resources={r"/api/*": {"origins": list(ALLOWED_ORIGINS)}}
+)
 
 # Allow cookies from frontend (credentials)
 CORS(app, resources={r"/*": {"origins": [FRONTEND_URL]}}, supports_credentials=True)
