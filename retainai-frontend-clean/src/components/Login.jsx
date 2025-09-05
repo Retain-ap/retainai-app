@@ -18,6 +18,21 @@ const BG = {
 
 const SUPPORT_EMAIL = "owner@retainai.ca";
 
+// ---- API base (CRA + Vite safe) ----
+const API_BASE =
+  (typeof import.meta !== "undefined" &&
+    import.meta.env &&
+    import.meta.env.VITE_API_BASE_URL) ||
+  (typeof process !== "undefined" &&
+    process.env &&
+    process.env.REACT_APP_API_BASE) ||
+  // Fallback: use prod when not on localhost
+  (typeof window !== "undefined" &&
+  window.location &&
+  window.location.hostname.includes("localhost")
+    ? "http://localhost:5000"
+    : "https://retainai-app.onrender.com");
+
 // Small input
 function Input({ type = "text", value, onChange, placeholder, onKeyDown, rightEl, autoComplete }) {
   return (
@@ -82,7 +97,7 @@ export default function Login() {
     setError("");
     try {
       const token = credentialResponse.credential;
-      const res = await fetch("http://localhost:5000/api/oauth/google", {
+      const res = await fetch(`${API_BASE}/api/oauth/google`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ credential: token }),
@@ -93,6 +108,7 @@ export default function Login() {
         setSubmitting(false);
         return;
       }
+      // persist for UI
       localStorage.setItem(
         "user",
         JSON.stringify({
@@ -103,6 +119,11 @@ export default function Login() {
         })
       );
       localStorage.setItem("userEmail", data.user.email);
+      // short cookie so backend/other tabs can read it
+      document.cookie = `user_email=${encodeURIComponent(
+        data.user.email
+      )}; Path=/; SameSite=Lax; Max-Age=2592000`;
+
       if (remember) {
         localStorage.setItem("rememberEmail", data.user.email);
         localStorage.setItem("rememberFlag", "1");
@@ -125,7 +146,7 @@ export default function Login() {
     }
     setSubmitting(true);
     try {
-      const res = await fetch("http://localhost:5000/api/login", {
+      const res = await fetch(`${API_BASE}/api/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -146,6 +167,10 @@ export default function Login() {
         })
       );
       localStorage.setItem("userEmail", email);
+      document.cookie = `user_email=${encodeURIComponent(
+        email
+      )}; Path=/; SameSite=Lax; Max-Age=2592000`;
+
       if (remember) {
         localStorage.setItem("rememberEmail", email);
         localStorage.setItem("rememberFlag", "1");
@@ -221,7 +246,7 @@ export default function Login() {
         </div>
       </div>
 
-      {/* content (symmetrical spacing) */}
+      {/* content */}
       <div
         style={{
           position: "relative",
