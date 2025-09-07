@@ -58,6 +58,12 @@ CORS(
     },
 )
 
+# Start the scheduler at import time (one per worker)
+start_scheduler_once()
+
+# Disable Flask-APScheduler HTTP API so it doesn’t add routes at runtime
+app.config.setdefault("SCHEDULER_API_ENABLED", False)
+
 @app.after_request
 def add_cors_headers(resp):
     origin = (request.headers.get("Origin") or "").rstrip("/")
@@ -2138,22 +2144,53 @@ def api_get_leads_v2(user_email):
 @app.post('/api/leads/<user_email>')
 def api_save_leads_v2(user_email):
     data = request.get_json(force=True) or {}
-    leads = data.get("leads", [])
+
+    # If the frontend sends an empty list on logout, DO NOT wipe storage.
+    # Only allow replacing with empty when caller explicitly sets allow_empty=True.
+    if "leads" not in data:
+        return jsonify({"error": "Field 'leads' is required"}), 400
+
+    leads = data.get("leads")
     if not isinstance(leads, list):
         return jsonify({"error": "Leads must be a list"}), 400
+
+    if len(leads) == 0 and not bool(data.get("allow_empty", False)):
+        # No-op: return what we currently have.
+        current = load_leads().get(user_email, [])
+        return jsonify({"message": "ignored empty save", "leads": current}), 200
+
+    # Normal save path (replace with provided list)
     now = datetime.datetime.utcnow().isoformat() + "Z"
     leads_by_user = load_leads()
+
+    # Normalize records so later PATCH calls (notes, tags, etc.) always find IDs.
+    normalized = []
     for lead in leads:
-        lead.setdefault("id", str(uuid.uuid4()))
-        lead.setdefault("createdAt", now)
-        lead.setdefault("last_contacted", lead.get("createdAt") or now)
-        lead.setdefault("name", lead.get("name") or lead.get("email") or "")
-        lead.setdefault("notes", lead.get("notes", ""))
-        lead.setdefault("tags", lead.get("tags", []))
-        lead.setdefault("owner", user_email)
-    leads_by_user[user_email] = leads
+        l = dict(lead or {})
+        l.setdefault("id", str(uuid.uuid4()))
+        l.setdefault("createdAt", now)
+        l.setdefault("last_contacted", l.get("createdAt") or now)
+        l.setdefault("name", l.get("name") or l.get("email") or "")
+        l.setdefault("notes", l.get("notes", ""))
+        l.setdefault("tags", l.get("tags", []))
+        l.setdefault("owner", user_email)
+        l.setdefault("wa_opt_out", bool(l.get("wa_opt_out", False)))
+        normalized.append(l)
+
+    leads_by_user[user_email] = normalized
     save_leads(leads_by_user)
-    return jsonify({"message": "Leads updated", "leads": leads}), 200
+    return jsonify({"message": "Leads updated", "leads": normalized}), 200
+
+@app.delete('/api/leads/<user_email>/<lead_id>')
+def api_delete_lead_v2(user_email, lead_id):
+    leads_by_user = load_leads()
+    arr = leads_by_user.get(user_email, []) or []
+    new_arr = [ld for ld in arr if str(ld.get("id")) != str(lead_id)]
+    if len(new_arr) == len(arr):
+        return jsonify({"error": "Lead not found"}), 404
+    leads_by_user[user_email] = new_arr
+    save_leads(leads_by_user)
+    return jsonify({"ok": True})
 
 @app.post('/api/leads/<user_email>/add')
 def api_add_lead_v2(user_email):
