@@ -3,8 +3,19 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./index.css";
-import GoogleAuthWrapper from "./components/GoogleAuthProvider";
 import { SettingsProvider } from "./components/SettingsContext";
+import { GoogleOAuthProvider } from "@react-oauth/google";
+
+// ---- Env helpers (CRA first, then Vite) ----
+const GOOGLE_CLIENT_ID =
+  (typeof process !== "undefined" && process.env && process.env.REACT_APP_GOOGLE_CLIENT_ID) ||
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_GOOGLE_CLIENT_ID) ||
+  "";
+
+const API_BASE =
+  (typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE) ||
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_BASE) ||
+  "";
 
 // ---------------- PWA install prompt plumbing ----------------
 let _deferredInstallPrompt = null;
@@ -21,11 +32,9 @@ export async function promptInstall() {
   return choice;
 }
 
-// Fired when the app becomes installable (Chrome/Edge desktop & Android)
 window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault(); // don’t show the mini-infobar; we’ll trigger it manually
   _deferredInstallPrompt = e;
-  // Tell any UI (like Sidebar) that install is now available
   window.dispatchEvent(new Event("pwa-install-available"));
 });
 
@@ -42,26 +51,29 @@ if ("serviceWorker" in navigator) {
       console.log("Service Worker registered:", registration);
 
       // Ask for push permission
-      const permission = await Notification.requestPermission();
-      if (permission === "granted" && process.env.REACT_APP_VAPID_PUBLIC_KEY) {
-        const subscribeOptions = {
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(
-            process.env.REACT_APP_VAPID_PUBLIC_KEY
-          ),
-        };
-        const pushSubscription = await registration.pushManager.subscribe(subscribeOptions);
-        console.log("PushSubscription:", pushSubscription);
+      if (typeof Notification !== "undefined") {
+        const permission = await Notification.requestPermission();
+        if (permission === "granted" && process.env.REACT_APP_VAPID_PUBLIC_KEY) {
+          const subscribeOptions = {
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(
+              process.env.REACT_APP_VAPID_PUBLIC_KEY
+            ),
+          };
+          const pushSubscription = await registration.pushManager.subscribe(subscribeOptions);
+          console.log("PushSubscription:", pushSubscription);
 
-        // Send to backend
-        await fetch("/api/save-subscription", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            subscription: pushSubscription,
-            email: localStorage.getItem("userEmail"),
-          }),
-        });
+          // Send to backend
+          const base = (API_BASE || window.location.origin).replace(/\/$/, "");
+          await fetch(`${base}/api/save-subscription`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              subscription: pushSubscription,
+              email: localStorage.getItem("userEmail"),
+            }),
+          });
+        }
       }
     } catch (err) {
       console.error("SW registration / push setup failed:", err);
@@ -72,11 +84,11 @@ if ("serviceWorker" in navigator) {
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render(
   <React.StrictMode>
-    <SettingsProvider>
-      <GoogleAuthWrapper>
+    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID || "missing-client-id"}>
+      <SettingsProvider>
         <App />
-      </GoogleAuthWrapper>
-    </SettingsProvider>
+      </SettingsProvider>
+    </GoogleOAuthProvider>
   </React.StrictMode>
 );
 
