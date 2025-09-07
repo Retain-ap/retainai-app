@@ -1,20 +1,13 @@
-# app.py — header / bootstrap (hardened for Render)
-# - Dotenv only in non-prod
-# - ALLOWED_ORIGINS/FRONTEND_ORIGINS merged & normalized
-# - /healthz (for Render) + /api/health
-# - Session cookie defaults safe for cross-site
-# - DATA_ROOT primary (DATA_DIR fallback)
-# - Clear logging on blueprint registration
-
+# app.py — production-hardened (CORS, persistent DATA_ROOT, health, atomic JSON)
 import os, json, re, hmac, hashlib, base64, datetime, urllib.parse, time, threading, uuid, zlib, random
 from uuid import uuid4
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse, quote_plus
+from urllib.parse import urlparse, unquote
 
-from flask import Flask, request, jsonify, send_from_directory, redirect, Blueprint, make_response
+from flask import Flask, request, jsonify, send_from_directory, redirect, Blueprint
 from flask_cors import CORS
 
-# Only load dotenv locally to avoid prod parse errors
+# Only load dotenv locally (avoid prod parse surprises)
 if os.getenv("FLASK_ENV") != "production":
     try:
         from dotenv import load_dotenv
@@ -44,14 +37,12 @@ app.config.from_object(Config())
 # Merge/normalize allowed origins
 _raw_origins = (
     os.getenv("ALLOWED_ORIGINS")
-    or os.getenv("FRONTEND_ORIGINS")          # legacy env name we used earlier
-    or "http://localhost:3000"
+    or os.getenv("FRONTEND_ORIGINS")  # legacy env name we used earlier
+    or "http://localhost:3000,https://app.retainai.ca"
 )
-ALLOWED_ORIGINS = [
-    o.strip().rstrip("/") for o in _raw_origins.split(",") if o and o.strip()
-]
+ALLOWED_ORIGINS = [o.strip().rstrip("/") for o in _raw_origins.split(",") if o and o.strip()]
 
-# SINGLE Flask-CORS init
+# SINGLE Flask-CORS init (scope to /api/*)
 CORS(
     app,
     supports_credentials=True,
@@ -64,16 +55,7 @@ CORS(
     },
 )
 
-# Health endpoints (Render default + API)
-@app.get("/healthz")
-def healthz():
-    return {"ok": True}, 200
-
-@app.get("/api/health")
-def api_health():
-    return {"status": "ok"}, 200
-
-# SINGLE after_request to reflect request Origin for creds
+# Reflect request Origin for credentialed requests
 @app.after_request
 def add_cors_headers(resp):
     origin = (request.headers.get("Origin") or "").rstrip("/")
@@ -87,76 +69,27 @@ def add_cors_headers(resp):
         resp.headers.pop("Access-Control-Allow-Origin", None)
     return resp
 
+# Health endpoints (Render default + API)
+@app.get("/healthz")
+def healthz():
+    return "ok", 200
+
+@app.get("/api/health")
+def api_health():
+    return {"status": "ok"}, 200
+
 # ---------------------------------------------------
-# Lightweight signed session cookie
+# Persistent storage root & file layout
 # ---------------------------------------------------
-APP_SECRET = (
-    os.getenv("APP_SECRET")
-    or os.getenv("META_APP_SECRET")
-    or os.getenv("SECRET_KEY")
-    or "dev-secret"
-)
-SESSION_COOKIE_NAME = os.getenv("SESSION_COOKIE_NAME", "retain_session")
-
-# If frontend & backend are on different domains, SameSite=None + Secure=True are required
-_prod = os.getenv("FLASK_ENV") == "production"
-SESSION_COOKIE_SECURE = (os.getenv("SESSION_COOKIE_SECURE", "true" if _prod else "false").lower() == "true")
-SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "None" if _prod else "Lax")
-
-def _sign_session(email: str) -> str:
-    ts = str(int(time.time()))
-    msg = f"{email}.{ts}".encode("utf-8")
-    sig = hmac.new(APP_SECRET.encode("utf-8"), msg, hashlib.sha256).digest()
-    blob = base64.urlsafe_b64encode(msg + b"." + sig).decode("ascii")
-    return blob
-
-def _clear_session_cookie(resp):
-    resp.delete_cookie(
-        SESSION_COOKIE_NAME,
-        path="/",
-        secure=SESSION_COOKIE_SECURE,
-        samesite=SESSION_COOKIE_SAMESITE
-    )
-
-def _set_session_cookie(resp, email: str):
-    token = _sign_session(email)
-    resp.set_cookie(
-        SESSION_COOKIE_NAME,
-        token,
-        path="/",
-        httponly=True,
-        secure=SESSION_COOKIE_SECURE,
-        samesite=SESSION_COOKIE_SAMESITE,
-        max_age=60 * 60 * 24 * 14,  # 14 days
-    )
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
 
-def _first_writable(paths):
-    for p in paths:
-        if not p:
-            continue
-        try:
-            os.makedirs(p, exist_ok=True)
-            test = os.path.join(p, ".writetest")
-            with open(test, "w", encoding="utf-8") as f:
-                f.write("ok")
-            os.remove(test)
-            return p
-        except Exception:
-            continue
-    # last resort inside repo (ephemeral)
-    fallback = os.path.join(BASE_DIR, "data")
-    os.makedirs(fallback, exist_ok=True)
-    return fallback
-
-# Prefer env, then Render’s persistent disk (/var/data), then repo-local ./data
-DATA_ROOT = _first_writable([
-    os.getenv("DATA_ROOT"),
-    os.getenv("DATA_DIR"),
-    "/var/data",
-    os.path.join(BASE_DIR, "data"),
-])
+# Prefer mounted disk (/var/data) if present; else env override; else local ./data
+DATA_ROOT = (
+    os.getenv("DATA_ROOT")
+    or ("/var/data" if os.path.isdir("/var/data") else None)
+    or os.path.join(BASE_DIR, "data")
+)
+os.makedirs(DATA_ROOT, exist_ok=True)
 print(f"[BOOT] DATA_ROOT = {DATA_ROOT}")
 
 # JSON/state files in DATA_ROOT
@@ -181,22 +114,34 @@ FILE_USERS         = os.path.join(DATA_ROOT, "users_profiles.json")
 CHANNEL_EMAIL = "email"
 CHANNEL_WHATSAPP = "whatsapp"
 
-# ---------------------------------------------------
-# Third-party & integration keys
-# ---------------------------------------------------
+# ----------------------------
+# Env & third-party keys
+# ----------------------------
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 SENDGRID_API_KEY   = os.getenv("SENDGRID_API_KEY")
 VAPID_PUBLIC_KEY   = os.getenv("VAPID_PUBLIC_KEY")
 VAPID_PRIVATE_KEY  = os.getenv("VAPID_PRIVATE_KEY")
 SENDER_EMAIL       = os.getenv("SENDER_EMAIL", "noreply@retainai.ca")
 
-STRIPE_SECRET_KEY          = os.getenv("STRIPE_SECRET_KEY")
-STRIPE_PRICE_ID            = os.getenv("STRIPE_PRICE_ID")
-STRIPE_WEBHOOK_SECRET      = os.getenv("STRIPE_WEBHOOK_SECRET")
-STRIPE_CONNECT_CLIENT_ID   = os.getenv("STRIPE_CONNECT_CLIENT_ID")
+STRIPE_SECRET_KEY        = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_PRICE_ID          = os.getenv("STRIPE_PRICE_ID")
+STRIPE_WEBHOOK_SECRET    = os.getenv("STRIPE_WEBHOOK_SECRET")
+STRIPE_CONNECT_CLIENT_ID = os.getenv("STRIPE_CONNECT_CLIENT_ID")
 stripe.api_key = STRIPE_SECRET_KEY
 
-# Google OAuth
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
+# --- WhatsApp Cloud API ---
+WHATSAPP_TOKEN            = os.getenv("WHATSAPP_TOKEN") or os.getenv("WHATSAPP_ACCESS_TOKEN")
+WHATSAPP_PHONE_ID         = os.getenv("WHATSAPP_PHONE_ID") or os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+WHATSAPP_VERIFY_TOKEN     = os.getenv("WHATSAPP_VERIFY_TOKEN", "retainai-verify")
+WHATSAPP_WABA_ID          = os.getenv("WHATSAPP_WABA_ID") or os.getenv("WHATSAPP_BUSINESS_ID")
+WHATSAPP_TEMPLATE_DEFAULT = os.getenv("WHATSAPP_TEMPLATE_DEFAULT", "retainai_outreach")
+WHATSAPP_TEMPLATE_LANG    = os.getenv("WHATSAPP_TEMPLATE_LANG", "en_US")
+APP_SECRET                = os.getenv("APP_SECRET") or os.getenv("META_APP_SECRET")
+DEFAULT_COUNTRY_CODE      = (os.getenv("DEFAULT_COUNTRY_CODE") or "1").strip()
+
+# --- Google OAuth ---
 GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI  = os.getenv("GOOGLE_REDIRECT_URI")
@@ -206,93 +151,6 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/calendar",
 ]
-
-# WhatsApp Cloud API
-WHATSAPP_TOKEN            = os.getenv("WHATSAPP_TOKEN") or os.getenv("WHATSAPP_ACCESS_TOKEN")
-WHATSAPP_PHONE_ID         = os.getenv("WHATSAPP_PHONE_ID") or os.getenv("WHATSAPP_PHONE_NUMBER_ID")
-WHATSAPP_VERIFY_TOKEN     = os.getenv("WHATSAPP_VERIFY_TOKEN", "retainai-verify")
-WHATSAPP_WABA_ID          = os.getenv("WHATSAPP_WABA_ID") or os.getenv("WHATSAPP_BUSINESS_ID")
-WHATSAPP_TEMPLATE_DEFAULT = os.getenv("WHATSAPP_TEMPLATE_DEFAULT", "retainai_outreach")
-WHATSAPP_TEMPLATE_LANG    = os.getenv("WHATSAPP_TEMPLATE_LANG", "en_US")
-DEFAULT_COUNTRY_CODE      = (os.getenv("DEFAULT_COUNTRY_CODE") or "1").strip()
-
-# ---------------------------------------------------
-# Blueprints (with logging)
-# ---------------------------------------------------
-try:
-    from app_imports import imports_bp
-    app.register_blueprint(imports_bp, url_prefix="/api")
-    print("[BOOT] imports_bp registered at /api")
-except Exception as e:
-    print(f"[BOOT] imports_bp not registered: {e}")
-
-try:
-    from app_team import team_bp
-    app.register_blueprint(team_bp, url_prefix="/api")
-    print("[BOOT] team_bp registered at /api")
-except Exception as e:
-    print(f"[BOOT] team_bp not registered: {e}")
-
-try:
-    from app_wa_auto_appointments import WA_AUTO_BP
-    app.register_blueprint(WA_AUTO_BP, url_prefix="/api")
-    print("[BOOT] WA_AUTO_BP registered at /api")
-except Exception as e:
-    print(f"[BOOT] WA_AUTO_BP not registered: {e}")
-
-
-# ----------------------------
-# Helpers: JSON storage
-# ----------------------------
-def load_json(file_path, default=None):
-    if not os.path.exists(file_path):
-        return default if default is not None else {}
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return default if default is not None else {}
-
-def save_json(file_path, data):
-    tmp = f"{file_path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, file_path)
-
-def load_leads():         return load_json(LEADS_FILE, {})
-def save_leads(data):     save_json(LEADS_FILE, data)
-def load_users():         return load_json(USERS_FILE, {})
-def save_users(users):    save_json(USERS_FILE, users)
-def load_notifications(): return load_json(NOTIFICATIONS_FILE, {})
-def save_notifications(d):save_json(NOTIFICATIONS_FILE, d)
-def load_appointments():  return load_json(APPOINTMENTS_FILE, {})
-def save_appointments(d): save_json(APPOINTMENTS_FILE, d)
-def load_chats():         return load_json(CHAT_FILE, {})
-def save_chats(d):        save_json(CHAT_FILE, d)
-def load_statuses():      return load_json(STATUS_FILE, {})
-def save_statuses(d):     save_json(STATUS_FILE, d)
-
-# ----------------------------
-# Email via SendGrid (fixed)
-# ----------------------------
-def send_email_with_template(to_email, template_id, dynamic_data, subject=None, from_email=None, reply_to_email=None):
-    from_email = from_email or SENDER_EMAIL
-    subject = subject or "Message from RetainAI"
-    message = Mail(from_email=from_email, to_emails=to_email, subject=subject)
-    message.template_id = template_id
-    dynamic_data = dict(dynamic_data or {})
-    dynamic_data.setdefault("subject", subject)
-    message.dynamic_template_data = dynamic_data
-    if reply_to_email:
-        message.reply_to = Email(reply_to_email)
-    try:
-        sg = SendGridAPIClient(os.getenv("SENDGRID_API_KEY"))  # <-- FIXED
-        response = sg.send(message)
-        app.logger.info(f"[SENDGRID] Status: {response.status_code} | To: {to_email} | Template: {template_id}")
-        return 200 <= response.status_code < 300 or response.status_code == 202
-    except Exception as e:
-        app.logger.error(f"[SENDGRID ERROR] Failed to send to {to_email}: {e}")
-        return False
 
 # ----------------------------
 # SendGrid templates
@@ -309,17 +167,14 @@ SG_TEMPLATE_UPSELL_LEAD        = "d-a7a2c04c57e344aebd6a94559ae71ea9"
 SG_TEMPLATE_BDAY_REMINDER_USER = "d-599937685fc544ecb756d9fdb8275a9b"
 
 PROMPT_TYPE_TO_TEMPLATE = {
-    "followup": SG_TEMPLATE_FOLLOWUP_LEAD,
-    "reengage": SG_TEMPLATE_REENGAGE_LEAD,
-    "apology":  SG_TEMPLATE_APOLOGY_LEAD,
-    "upsell":   SG_TEMPLATE_UPSELL_LEAD,
-    "birthday": SG_TEMPLATE_BIRTHDAY,
+    "followup":   SG_TEMPLATE_FOLLOWUP_LEAD,
+    "reengage":   SG_TEMPLATE_REENGAGE_LEAD,
+    "apology":    SG_TEMPLATE_APOLOGY_LEAD,
+    "upsell":     SG_TEMPLATE_UPSELL_LEAD,
+    "birthday":   SG_TEMPLATE_BIRTHDAY,
     "appointment": SG_TEMPLATE_APPT_CONFIRM,
 }
 
-# ----------------------------
-# Business type follow-up intervals
-# ----------------------------
 BUSINESS_TYPE_INTERVALS = {
     "nail salon": 5,
     "real estate": 14,
@@ -331,16 +186,180 @@ BUSINESS_TYPE_INTERVALS = {
     "accounting": 30,
 }
 
+# ---------------------------------------------------
+# Blueprints (keep your original registrations)
+# ---------------------------------------------------
+try:
+    from app_imports import imports_bp
+    app.register_blueprint(imports_bp)
+except Exception as e:
+    print(f"[BOOT] imports_bp not registered: {e}")
+
+try:
+    from app_team import team_bp
+    app.register_blueprint(team_bp)
+except Exception as e:
+    print(f"[BOOT] team_bp not registered: {e}")
+
+try:
+    from app_wa_auto_appointments import WA_AUTO_BP
+    app.register_blueprint(WA_AUTO_BP)
+except Exception as e:
+    print(f"[BOOT] WA_AUTO_BP not registered: {e}")
+
 # ----------------------------
-# Calendar / ICS helpers (fixed UTC + encoding)
+# Helpers: JSON storage (atomic)
+# ----------------------------
+def load_json(file_path):
+    if not os.path.exists(file_path):
+        return {}
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_json(file_path, data):
+    tmp = f"{file_path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, file_path)
+
+def load_leads():         return load_json(LEADS_FILE)
+def save_leads(data):     save_json(LEADS_FILE, data)
+def load_users():         return load_json(USERS_FILE)
+def save_users(users):    save_json(USERS_FILE, users)
+def load_notifications(): return load_json(NOTIFICATIONS_FILE)
+def save_notifications(d):save_json(NOTIFICATIONS_FILE, d)
+def load_appointments():  return load_json(APPOINTMENTS_FILE)
+def save_appointments(d): save_json(APPOINTMENTS_FILE, d)
+def load_chats():         return load_json(CHAT_FILE)
+def save_chats(d):        save_json(CHAT_FILE, d)
+def load_statuses():      return load_json(STATUS_FILE)
+def save_statuses(d):     save_json(STATUS_FILE, d)
+
+# ----------------------------
+# Minimal endpoints your frontend calls
+# ----------------------------
+def _norm_email(e: str) -> str:
+    return unquote(e or "").strip().lower()
+
+@app.get("/api/user/<path:email>")
+def api_get_user(email):
+    e = _norm_email(email)
+    users = load_users()
+    user = users.get(e)
+    # Return a minimal shell instead of 404 so UI can render defaults
+    if not user:
+        return jsonify({"email": e, "profile": {}, "settings": {}}), 200
+    user["email"] = e
+    return jsonify(user), 200
+
+@app.put("/api/user/<path:email>")
+def api_put_user(email):
+    e = _norm_email(email)
+    data = request.get_json(silent=True) or {}
+    users = load_users()
+    cur = users.get(e, {"email": e})
+    cur.update(data)  # shallow merge; extend as needed
+    users[e] = cur
+    save_users(users)
+    return jsonify(cur), 200
+
+@app.post("/api/generate_prompt")
+def api_generate_prompt():
+    payload   = request.get_json(silent=True) or {}
+    ptype     = (payload.get("type") or "followup").lower().strip()
+    lead_name = payload.get("name") or payload.get("lead_name") or "there"
+    business  = payload.get("business") or payload.get("businessName") or "our team"
+
+    templates = {
+        "followup": f"Hi {lead_name}, just following up from {business}. When's a good time to chat?",
+        "reengage": f"Hey {lead_name}, checking back in. We'd love to help you at {business}. Want to pick a time?",
+        "apology":  f"Hi {lead_name}, sorry we missed you earlier. If you're still interested, we can make it right.",
+        "upsell":   f"Hi {lead_name}, quick note — we can add an upgrade to your plan. Want the details?",
+        "birthday": f"Happy Birthday, {lead_name}! 🎉 Wishing you the best — {business}.",
+        "appointment": f"Hi {lead_name}, your appointment with {business} is confirmed. See you soon!",
+    }
+    text = templates.get(ptype, templates["followup"])
+    return jsonify({"text": text, "type": ptype}), 200
+
+
+# ----------------------------
+# Email via SendGrid
+# ----------------------------
+def send_email_with_template(to_email, template_id, dynamic_data, subject=None, from_email=None, reply_to_email=None):
+    from_email = from_email or SENDER_EMAIL
+    if not subject:
+        subject = "Message from RetainAI"
+    dynamic_data["subject"] = subject
+    message = Mail(from_email=from_email, to_emails=to_email, subject=subject)
+    message.template_id = template_id
+    message.dynamic_template_data = dynamic_data
+    if reply_to_email:
+        message.reply_to = Email(reply_to_email)
+    try:
+        sg = SendGridAPIClient(VAPID_PRIVATE_KEY if template_id == "fake" else os.getenv("SENDGRID_API_KEY"))
+        response = sg.send(message)
+        print(f"[SENDGRID] Status: {response.status_code} | To: {to_email} | Subject: {subject}")
+        return response.status_code == 202
+    except Exception as e:
+        print(f"[SENDGRID ERROR] Failed to send to {to_email}: {e}")
+        return False
+
+def send_welcome_email(to_email, user_name=None, business_type=None):
+    send_email_with_template(
+        to_email=to_email,
+        template_id=SG_TEMPLATE_WELCOME,
+        dynamic_data={"user_name": user_name or "", "business_type": business_type or ""},
+        from_email="welcome@retainai.ca"
+    )
+
+def send_birthday_email(lead_email, lead_name, business_name):
+    send_email_with_template(
+        to_email=lead_email,
+        template_id=SG_TEMPLATE_BIRTHDAY,
+        dynamic_data={"lead_name": lead_name, "business_name": business_name},
+    )
+
+def send_birthday_reminder_to_user(user_email, user_name, lead_name, business_name, birthday):
+    send_email_with_template(
+        to_email=user_email,
+        template_id=SG_TEMPLATE_BDAY_REMINDER_USER,
+        dynamic_data={
+            "user_name": user_name, "lead_name": lead_name, "business_name": business_name, "birthday": birthday
+        },
+        subject=f"Birthday Reminder: {lead_name}'s birthday is tomorrow!",
+        from_email="reminder@retainai.ca"
+    )
+
+def send_trial_ending_email(user_email, user_name, business_name, trial_end_date):
+    send_email_with_template(
+        to_email=user_email,
+        template_id=SG_TEMPLATE_TRIAL_ENDING,
+        dynamic_data={"user_name": user_name, "business_name": business_name, "trial_end_date": trial_end_date},
+    )
+
+def send_followup_reminder(user_email, lead):
+    send_email_with_template(
+        to_email=user_email,
+        template_id=SG_TEMPLATE_FOLLOWUP_USER,
+        dynamic_data={
+            "lead_name": lead.get("name", ""),
+            "lead_email": lead.get("email", ""),
+            "user_email": user_email or "",
+            "last_contacted": lead.get("last_contacted", ""),
+            "notes": lead.get("notes", ""),
+            "tags": ', '.join(lead.get("tags", []))
+        }
+    )
+
+# ----------------------------
+# Calendar / ICS helpers
 # ----------------------------
 def create_ics_file(appt):
     uid = appt.get('id')
-    # Accept naive stamp as UTC; if you store tz offsets, parse and convert here
-    dt = datetime.datetime.strptime(appt['appointment_time'], "%Y-%m-%dT%H:%M:%S")
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=datetime.timezone.utc)
-    dt_start = dt.astimezone(datetime.timezone.utc)
+    dt_start = datetime.datetime.strptime(appt['appointment_time'], "%Y-%m-%dT%H:%M:%S")
     dt_end = dt_start + datetime.timedelta(minutes=int(appt.get("duration", 30)))
     summary = f"Appointment with {appt['user_name']} at {appt['business_name']}"
     description = f"Appointment at {appt['appointment_location']} with {appt['user_name']}"
@@ -349,7 +368,7 @@ VERSION:2.0
 PRODID:-//RetainAI//EN
 BEGIN:VEVENT
 UID:{uid}
-DTSTAMP:{datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")}
+DTSTAMP:{dt_start.strftime("%Y%m%dT%H%M%SZ")}
 DTSTART:{dt_start.strftime("%Y%m%dT%H%M%SZ")}
 DTEND:{dt_end.strftime("%Y%m%dT%H%M%SZ")}
 SUMMARY:{summary}
@@ -359,7 +378,7 @@ END:VEVENT
 END:VCALENDAR
 """
     fname = f"{uid}.ics"
-    with open(os.path.join(ICS_DIR, fname), "w", encoding="utf-8") as f:
+    with open(os.path.join(ICS_DIR, fname), "w") as f:
         f.write(ics_content)
     return fname
 
@@ -368,19 +387,19 @@ def serve_ics(filename):
     return send_from_directory(ICS_DIR, filename, as_attachment=True)
 
 def make_google_calendar_link(appt):
-    dt = datetime.datetime.strptime(appt['appointment_time'], "%Y-%m-%dT%H:%M:%S")
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=datetime.timezone.utc)
-    dt_start = dt.astimezone(datetime.timezone.utc)
+    dt_start = datetime.datetime.strptime(appt['appointment_time'], "%Y-%m-%dT%H:%M:%S")
     dt_end = dt_start + datetime.timedelta(minutes=int(appt.get("duration", 30)))
     start_str = dt_start.strftime("%Y%m%dT%H%M%SZ")
     end_str = dt_end.strftime("%Y%m%dT%H%M%SZ")
-    title = quote_plus(f"Appointment with {appt['user_name']} at {appt['business_name']}")
-    details = quote_plus(f"Appointment with {appt['user_name']} at {appt['business_name']}.")
-    location = quote_plus(appt['appointment_location'])
+    title = f"Appointment with {appt['user_name']} at {appt['business_name']}"
+    location = appt['appointment_location'].replace(" ", "+")
+    details = f"Appointment with {appt['user_name']} at {appt['business_name']}."
     return (
-        "https://calendar.google.com/calendar/render?action=TEMPLATE"
-        f"&text={title}&dates={start_str}/{end_str}&details={details}&location={location}"
+        f"https://calendar.google.com/calendar/render?action=TEMPLATE"
+        f"&text={title.replace(' ','+')}"
+        f"&dates={start_str}/{end_str}"
+        f"&details={details.replace(' ','+')}"
+        f"&location={location}"
     )
 
 # ----------------------------
@@ -425,7 +444,7 @@ def send_warning_summary_email(user_email, warning_leads, interval):
     dynamic_data = {
         "user_name": user_name,
         "lead_list": lead_list_html,
-        "crm_link": f"{FRONTEND_BASE}/app/dashboard",
+        "crm_link": f"{FRONTEND_URL}/app/dashboard",
         "year": datetime.datetime.now().year,
         "interval": interval,
         "count": len(warning_leads)
@@ -439,7 +458,7 @@ def send_warning_summary_email(user_email, warning_leads, interval):
     )
 
 def check_for_lead_reminders():
-    app.logger.info("[Scheduler] Checking for leads needing follow-up...")
+    print("[Scheduler] Checking for leads needing follow-up...")
     leads_by_user = load_leads()
     users_by_email = load_users()
     now = datetime.datetime.utcnow()
@@ -450,8 +469,7 @@ def check_for_lead_reminders():
         warning_leads = []
         for lead in leads:
             last_contacted = lead.get("last_contacted") or lead.get("createdAt")
-            if not last_contacted: 
-                continue
+            if not last_contacted: continue
             try:
                 last_dt = datetime.datetime.fromisoformat(last_contacted.replace("Z", ""))
                 days_since = (now - last_dt).days
@@ -469,46 +487,7 @@ def check_for_lead_reminders():
                     f"{len(warning_leads)} leads require follow-up: " + ", ".join(lead["name"] for lead in warning_leads)
                 )
             except Exception as e:
-                app.logger.warning("[WARN] lead reminder email/log error: %s", e)
-
-def send_birthday_email(lead_email, lead_name, business_name):
-    send_email_with_template(
-        to_email=lead_email,
-        template_id=SG_TEMPLATE_BIRTHDAY,
-        dynamic_data={"lead_name": lead_name, "business_name": business_name},
-    )
-
-def send_birthday_reminder_to_user(user_email, user_name, lead_name, business_name, birthday):
-    send_email_with_template(
-        to_email=user_email,
-        template_id=SG_TEMPLATE_BDAY_REMINDER_USER,
-        dynamic_data={
-            "user_name": user_name, "lead_name": lead_name, "business_name": business_name, "birthday": birthday
-        },
-        subject=f"Birthday Reminder: {lead_name}'s birthday is tomorrow!",
-        from_email="reminder@retainai.ca"
-    )
-
-def send_trial_ending_email(user_email, user_name, business_name, trial_end_date):
-    send_email_with_template(
-        to_email=user_email,
-        template_id=SG_TEMPLATE_TRIAL_ENDING,
-        dynamic_data={"user_name": user_name, "business_name": business_name, "trial_end_date": trial_end_date},
-    )
-
-def send_followup_reminder(user_email, lead):
-    send_email_with_template(
-        to_email=user_email,
-        template_id=SG_TEMPLATE_FOLLOWUP_USER,
-        dynamic_data={
-            "lead_name": lead.get("name", ""),
-            "lead_email": lead.get("email", ""),
-            "user_email": user_email or "",
-            "last_contacted": lead.get("last_contacted", ""),
-            "notes": lead.get("notes", ""),
-            "tags": ', '.join(lead.get("tags", []))
-        }
-    )
+                print("[WARN] lead reminder email/log error:", e)
 
 def send_birthday_greetings():
     leads_by_user = load_leads()
@@ -576,7 +555,7 @@ def create_appointment(user_email):
         "user_name": data['user_name'],
         "user_email": data['user_email'],
         "business_name": data['business_name'],
-        "appointment_time": data['appointment_time'],  # expect "YYYY-MM-DDTHH:MM:SS" (UTC or local)
+        "appointment_time": data['appointment_time'],
         "appointment_location": data['appointment_location'],
         "duration": data.get('duration', 30),
         "notes": data.get('notes', "")
@@ -639,145 +618,153 @@ def delete_appointment(user_email, appt_id):
     return jsonify({"deleted": before - after}), 200
 
 # ----------------------------
-# Stripe Connect / Billing
+# Stripe Connect / Billing (AUTO-REFRESH)
 # ----------------------------
+
+# assumes: load_users(), save_users(), FRONTEND_URL, STRIPE_CONNECT_CLIENT_ID, STRIPE_WEBHOOK_SECRET configured
+
+ZERO_DECIMAL = {"bif","clp","djf","gnf","jpy","kmf","krw","mga","pyg","rwf","ugx","vnd","vuv","xaf","xof","xpf"}
+
 def to_minor(amount, currency):
-    c = (currency or "usd").lower()
-    return int(round(float(amount) * (1 if c in ZERO_DECIMAL else 100)))
+  c = (currency or "usd").lower()
+  return int(round(float(amount) * (1 if c in ZERO_DECIMAL else 100)))
 
 def from_minor(value, currency):
-    c = (currency or "usd").lower()
-    denom = 1 if c in ZERO_DECIMAL else 100.0
-    return (value or 0) / denom
+  c = (currency or "usd").lower()
+  denom = 1 if c in ZERO_DECIMAL else 100.0
+  return (value or 0) / denom
 
 def get_connected_acct(user_email: str):
-    users = load_users()
-    return users.get(user_email, {}).get("stripe_account_id")
+  users = load_users()
+  return users.get(user_email, {}).get("stripe_account_id")
 
 def serialize_invoice(inv):
-    currency = inv.currency
-    cust_name = (
-        (inv.customer.name if hasattr(inv.customer, "name") else None)
-        or inv.metadata.get("customer_name")
-        or inv.customer_email
-    )
-    amount_total = from_minor(getattr(inv, "total", None) or inv.amount_due, currency)
-    amount_due   = from_minor(inv.amount_due, currency)
-    amount_paid  = from_minor(getattr(inv, "amount_paid", 0), currency)
-    display      = amount_total if inv.status == "paid" else amount_due
-    return {
-        "id": inv.id,
-        "customer_name": cust_name,
-        "customer_email": inv.customer_email,
-        "amount_total": round(amount_total, 2),
-        "amount_due":   round(amount_due, 2),
-        "amount_paid":  round(amount_paid, 2),
-        "amount_display": round(display, 2),
-        "currency": currency,
-        "due_date": inv.due_date,
-        "status": inv.status,
-        "invoice_url": inv.hosted_invoice_url
-    }
+  """Uniform shape for both list + create responses."""
+  currency = inv.currency
+  cust_name = (
+    (inv.customer.name if hasattr(inv.customer, "name") else None)
+    or inv.metadata.get("customer_name")
+    or inv.customer_email
+  )
+  amount_total = from_minor(getattr(inv, "total", None) or inv.amount_due, currency)
+  amount_due   = from_minor(inv.amount_due, currency)
+  amount_paid  = from_minor(getattr(inv, "amount_paid", 0), currency)
+  display      = amount_total if inv.status == "paid" else amount_due
+  return {
+    "id": inv.id,
+    "customer_name": cust_name,
+    "customer_email": inv.customer_email,
+    "amount_total": round(amount_total, 2),
+    "amount_due":   round(amount_due, 2),
+    "amount_paid":  round(amount_paid, 2),
+    "amount_display": round(display, 2),
+    "currency": currency,
+    "due_date": inv.due_date,
+    "status": inv.status,
+    "invoice_url": inv.hosted_invoice_url
+  }
 
 @app.route("/api/stripe/connect-url", methods=["GET"])
 def get_stripe_connect_url():
-    user_email = request.args.get("user_email")
-    if not user_email:
-        return jsonify({"error": "Missing user_email"}), 400
-    acct = stripe.Account.create(type="express", email=user_email)
-    users = load_users()
-    users.setdefault(user_email, {})
-    users[user_email]["stripe_account_id"] = acct.id
-    users[user_email]["stripe_connected"]  = False  # <-- FIX: only true after OAuth callback
-    save_users(users)
-    return_url  = f"{FRONTEND_BASE}/app?stripe_connected=1"
-    refresh_url = f"{FRONTEND_BASE}/app?stripe_refresh=1"
-    link = stripe.AccountLink.create(
-        account=acct.id,
-        refresh_url=refresh_url,
-        return_url=return_url,
-        type="account_onboarding",
-    )
-    return jsonify({"url": link.url}), 200
+  user_email = request.args.get("user_email")
+  if not user_email:
+    return jsonify({"error": "Missing user_email"}), 400
+  acct = stripe.Account.create(type="express", email=user_email)
+  users = load_users()
+  users.setdefault(user_email, {})
+  users[user_email]["stripe_account_id"] = acct.id
+  users[user_email]["stripe_connected"]  = True
+  save_users(users)
+  return_url  = f"{FRONTEND_URL}/app?stripe_connected=1"
+  refresh_url = f"{FRONTEND_URL}/app?stripe_refresh=1"
+  link = stripe.AccountLink.create(
+    account=acct.id,
+    refresh_url=refresh_url,
+    return_url=return_url,
+    type="account_onboarding",
+  )
+  return jsonify({"url": link.url}), 200
 
 @app.route("/api/stripe/oauth/connect", methods=["GET"])
 def stripe_oauth_connect():
-    user_email = request.args.get("user_email")
-    if not user_email:
-        return jsonify({"error": "Missing user_email"}), 400
-    redirect_uri = os.getenv("STRIPE_REDIRECT_URI")
-    oauth_url = (
-        "https://connect.stripe.com/oauth/authorize"
-        f"?response_type=code"
-        f"&client_id={STRIPE_CONNECT_CLIENT_ID}"
-        f"&scope=read_write"
-        f"&redirect_uri={redirect_uri}"
-        f"&state={user_email}"
-    )
-    return jsonify({"url": oauth_url}), 200
+  user_email = request.args.get("user_email")
+  if not user_email:
+    return jsonify({"error": "Missing user_email"}), 400
+  redirect_uri = os.getenv("STRIPE_REDIRECT_URI")
+  oauth_url = (
+    "https://connect.stripe.com/oauth/authorize"
+    f"?response_type=code"
+    f"&client_id={STRIPE_CONNECT_CLIENT_ID}"
+    f"&scope=read_write"
+    f"&redirect_uri={redirect_uri}"
+    f"&state={user_email}"
+  )
+  return jsonify({"url": oauth_url}), 200
 
 @app.route("/api/stripe/dashboard-link", methods=["GET"])
 def stripe_dashboard_link():
-    user_email = request.args.get("user_email")
-    if not user_email:
-        return jsonify({"error": "Missing user_email"}), 400
-    users = load_users()
-    acct_id = users.get(user_email, {}).get("stripe_account_id")
-    if not acct_id:
-        return jsonify({"error": "Stripe account not connected"}), 400
-    acct = stripe.Account.retrieve(acct_id)
-    if acct.type in ("express", "custom"):
-        link = stripe.Account.create_login_link(acct_id)
-        return jsonify({"url": link.url}), 200
-    else:
-        return jsonify({"url": f"https://dashboard.stripe.com/{acct_id}"}), 200
+  user_email = request.args.get("user_email")
+  if not user_email:
+    return jsonify({"error": "Missing user_email"}), 400
+  users = load_users()
+  acct_id = users.get(user_email, {}).get("stripe_account_id")
+  if not acct_id:
+    return jsonify({"error": "Stripe account not connected"}), 400
+  acct = stripe.Account.retrieve(acct_id)
+  if acct.type in ("express", "custom"):
+    link = stripe.Account.create_login_link(acct_id)
+    return jsonify({"url": link.url}), 200
+  else:
+    return jsonify({"url": f"https://dashboard.stripe.com/{acct_id}"}), 200
 
 @app.route("/api/stripe/oauth/callback", methods=["GET"])
 def stripe_oauth_callback():
-    error      = request.args.get("error")
-    error_desc = request.args.get("error_description", "")
-    user_email = request.args.get("state")
-    frontend = FRONTEND_BASE
-    if error:
-        msg = urllib.parse.quote_plus(error_desc)
-        return redirect(f"{frontend}/app?stripe_error=1&stripe_error_desc={msg}")
-    code = request.args.get("code")
-    if not code or not user_email:
-        return redirect(f"{frontend}/app?stripe_error=1&stripe_error_desc=missing_code_or_state")
-    resp = stripe.OAuth.token(grant_type="authorization_code", code=code)
-    stripe_user_id = resp["stripe_user_id"]
-    users = load_users()
-    users.setdefault(user_email, {})
-    users[user_email]["stripe_account_id"] = stripe_user_id
-    users[user_email]["stripe_connected"]  = True
-    save_users(users)
-    return redirect(f"{frontend}/app?stripe_connected=1")
+  error      = request.args.get("error")
+  error_desc = request.args.get("error_description", "")
+  user_email = request.args.get("state")
+  frontend   = FRONTEND_URL
+  if error:
+    msg = urllib.parse.quote_plus(error_desc)
+    return redirect(f"{frontend}/app?stripe_error=1&stripe_error_desc={msg}")
+  code = request.args.get("code")
+  if not code or not user_email:
+    return redirect(f"{frontend}/app?stripe_error=1&stripe_error_desc=missing_code_or_state")
+  resp = stripe.OAuth.token(grant_type="authorization_code", code=code)
+  stripe_user_id = resp["stripe_user_id"]
+  users = load_users()
+  users.setdefault(user_email, {})
+  users[user_email]["stripe_account_id"] = stripe_user_id
+  users[user_email]["stripe_connected"]  = True
+  save_users(users)
+  return redirect(f"{frontend}/app?stripe_connected=1")
 
+# Fetch connected account details (default_currency, etc.)
 @app.route("/api/stripe/account", methods=["GET"])
 def get_stripe_account():
-    user_email = request.args.get("user_email")
-    if not user_email:
-        return jsonify({"error": "Missing user_email"}), 400
-    acct_id = get_connected_acct(user_email)
-    if not acct_id:
-        return jsonify({"error": "Stripe account not connected"}), 404
-    acct = stripe.Account.retrieve(acct_id)
-    return jsonify({
-        "account": {
-            "id": acct.id,
-            "default_currency": acct.default_currency,
-            "details_submitted": acct.details_submitted,
-            "email": acct.email
-        }
-    }), 200
+  user_email = request.args.get("user_email")
+  if not user_email:
+    return jsonify({"error": "Missing user_email"}), 400
+  acct_id = get_connected_acct(user_email)
+  if not acct_id:
+    return jsonify({"error": "Stripe account not connected"}), 404
+  acct = stripe.Account.retrieve(acct_id)
+  return jsonify({
+    "account": {
+      "id": acct.id,
+      "default_currency": acct.default_currency,
+      "details_submitted": acct.details_submitted,
+      "email": acct.email
+    }
+  }), 200
 
+# Create invoice, attach line item, return UPDATED LIST for instant UI refresh
 @app.route('/api/stripe/invoice', methods=['POST'])
 def create_stripe_invoice():
     data = request.json or {}
     user_email     = data.get("user_email")
     customer_name  = data.get("customer_name")
     customer_email = data.get("customer_email")
-    amount         = data.get("amount")        # UI may pass total; keep as-is
+    amount         = data.get("amount")        # total = price * quantity (e.g., 49.99 * 2)
     description    = data.get("description")
     currency       = (data.get("currency") or "").lower().strip() or None
     quantity       = int(data.get("quantity") or 1)
@@ -822,7 +809,6 @@ def create_stripe_invoice():
         )
 
         # 2) attach a single line item (sets invoice currency)
-        # If your UI already pre-multiplies, leave as total_float. If not, switch to total_float * quantity.
         total_minor = to_minor(total_float, currency)
         stripe.InvoiceItem.create(
             customer=cust_id,
@@ -845,120 +831,119 @@ def create_stripe_invoice():
             "success": True,
             "invoice_id": inv.id,
             "invoice_url": inv.hosted_invoice_url,
-            "amount_due":   from_minor(getattr(inv, "amount_due", 0), inv.currency),
+            "amount_due":   from_minor(inv.amount_due, inv.currency),
             "amount_total": from_minor(getattr(inv, "total", None) or inv.amount_due, inv.currency),
             "currency": inv.currency,
-            "invoice": serialize_invoice(inv),
-            "invoices": invoices
+            "invoice": serialize_invoice(inv),  # single new invoice (uniform shape)
+            "invoices": invoices                 # full refreshed list
         }), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# List invoices
 @app.route('/api/stripe/invoices', methods=['GET'])
 def list_stripe_invoices():
-    user_email = request.args.get("user_email")
-    if not user_email:
-        return jsonify({"error": "Missing user_email"}), 400
-    acct_id = get_connected_acct(user_email)
-    if not acct_id:
-        return jsonify({"error": "Stripe account not connected"}), 400
+  user_email = request.args.get("user_email")
+  if not user_email:
+    return jsonify({"error": "Missing user_email"}), 400
+  acct_id = get_connected_acct(user_email)
+  if not acct_id:
+    return jsonify({"error": "Stripe account not connected"}), 400
 
-    invs = stripe.Invoice.list(limit=100, expand=["data.customer"], stripe_account=acct_id).data
-    out = [serialize_invoice(inv) for inv in invs]
-    return jsonify({"invoices": out}), 200
+  invs = stripe.Invoice.list(limit=100, expand=["data.customer"], stripe_account=acct_id).data
+  out = [serialize_invoice(inv) for inv in invs]
+  return jsonify({"invoices": out}), 200
 
 @app.route('/api/stripe/invoice/send', methods=['POST'])
 def resend_invoice_email():
-    data = request.json or {}
-    invoice_id = data.get("invoice_id")
-    user_email = data.get("user_email")
-    if not invoice_id or not user_email:
-        return jsonify({"error": "Missing invoice_id or user_email"}), 400
+  data = request.json or {}
+  invoice_id = data.get("invoice_id")
+  user_email = data.get("user_email")
+  if not invoice_id or not user_email:
+    return jsonify({"error": "Missing invoice_id or user_email"}), 400
 
-    users = load_users()
-    user = users.get(user_email)
-    if not user:
-        return jsonify({"error": "User not found"}), 404
-    acct_id = user.get("stripe_account_id")
-    if not acct_id:
-        return jsonify({"error": "Stripe account not connected"}), 400
+  users = load_users()
+  user = users.get(user_email)
+  if not user:
+    return jsonify({"error": "User not found"}), 404
+  acct_id = user.get("stripe_account_id")
+  if not acct_id:
+    return jsonify({"error": "Stripe account not connected"}), 400
 
-    user_name = user.get("name", "")
-    business  = user.get("business", "")
+  user_name = user.get("name", "")
+  business  = user.get("business", "")
 
-    try:
-        inv = stripe.Invoice.retrieve(invoice_id, expand=["customer"], stripe_account=acct_id)
-        total = from_minor(getattr(inv, "total", None) or inv.amount_due, inv.currency)
-        cust = inv.customer
-        html = f"""
-          <p>Hi {inv.metadata.get("customer_name","")},</p>
-          <p>Your invoice <strong>#{inv.number}</strong> from <strong>{business}</strong> is now available.</p>
-          <p><strong>Amount:</strong> {total:.2f} {inv.currency.upper()}</p>
-          <p><a href="{inv.hosted_invoice_url}">View &amp; pay your invoice →</a></p>
-          <br/>
-          <p>Thanks for working with {business}!</p>
-        """
-        msg = Mail(
-          from_email=Email("billing@retainai.ca", name=f"{user_name} at {business}"),
-          to_emails=cust.email,
-          subject=f"Invoice #{inv.number} from {business}",
-          html_content=html
-        )
-        SendGridAPIClient(os.getenv("SENDGRID_API_KEY")).send(msg)
-        return jsonify({"success": True}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+  try:
+    inv = stripe.Invoice.retrieve(invoice_id, expand=["customer"], stripe_account=acct_id)
+    total = from_minor(getattr(inv, "total", None) or inv.amount_due, inv.currency)
+    cust = inv.customer
+    html = f"""
+      <p>Hi {inv.metadata.get("customer_name","")},</p>
+      <p>Your invoice <strong>#{inv.number}</strong> from <strong>{business}</strong> is now available.</p>
+      <p><strong>Amount:</strong> {total:.2f} {inv.currency.upper()}</p>
+      <p><a href="{inv.hosted_invoice_url}">View &amp; pay your invoice →</a></p>
+      <br/>
+      <p>Thanks for working with {business}!</p>
+    """
+    msg = Mail(
+      from_email=Email("billing@retainai.ca", name=f"{user_name} at {business}"),
+      to_emails=cust.email,
+      subject=f"Invoice #{inv.number} from {business}",
+      html_content=html
+    )
+    SendGridAPIClient(os.getenv("SENDGRID_API_KEY")).send(msg)
+    return jsonify({"success": True}), 200
+  except Exception as e:
+    return jsonify({"error": str(e)}), 500
 
 @app.route('/api/stripe/webhook', methods=['POST'])
 def stripe_webhook():
-    payload = request.data
-    sig_header = request.headers.get('stripe-signature')
-    endpoint_secret = STRIPE_WEBHOOK_SECRET
-    try:
-        event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
-    except Exception:
-        return '', 400
-    if event['type'] == 'checkout.session.completed':
-        session = event['data']['object']
-        email = session.get('customer_email')
-        if email:
-            users = load_users()
-            user = users.get(email)
-            if user:
-                user['status'] = 'active'
-                save_users(users)
-    # add other events as needed (invoice.paid, etc.)
-    return '', 200
+  payload = request.data
+  sig_header = request.headers.get('stripe-signature')
+  endpoint_secret = STRIPE_WEBHOOK_SECRET
+  try:
+    event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
+  except Exception:
+    return '', 400
+  if event['type'] == 'checkout.session.completed':
+    session = event['data']['object']
+    email = session.get('customer_email')
+    if email:
+      users = load_users()
+      user = users.get(email)
+      if user:
+        user['status'] = 'active'
+        save_users(users)
+  return '', 200
 
 @app.route("/api/stripe/disconnect", methods=["POST"])
 def stripe_disconnect():
-    # Accept either JSON body or query param
-    user_email = (request.json or {}).get("user_email") or request.args.get("user_email")
-    if not user_email:
-        return jsonify({"error": "Missing user_email"}), 400
-    users = load_users()
-    user = users.get(user_email)
-    if not user or not user.get("stripe_account_id"):
-        return jsonify({"error": "No Stripe account to disconnect"}), 400
-    acct_id = user["stripe_account_id"]
-    try:
-        stripe.OAuth.deauthorize(client_id=STRIPE_CONNECT_CLIENT_ID, stripe_user_id=acct_id)
-    except Exception as e:
-        app.logger.warning(f"Stripe deauth failed for {acct_id}: {e}")
-    user.pop("stripe_account_id", None)
-    user["stripe_connected"] = False
-    save_users(users)
-    return ("", 204)
+  user_email = request.args.get("user_email")
+  if not user_email:
+    return jsonify({"error": "Missing user_email"}), 400
+  users = load_users()
+  user = users.get(user_email)
+  if not user or not user.get("stripe_account_id"):
+    return jsonify({"error": "No Stripe account to disconnect"}), 400
+  acct_id = user["stripe_account_id"]
+  try:
+    stripe.OAuth.deauthorize(client_id=STRIPE_CONNECT_CLIENT_ID, stripe_user_id=acct_id)
+  except Exception as e:
+    app.logger.warning(f"Stripe deauth failed for {acct_id}: {e}")
+  user.pop("stripe_account_id", None)
+  user["stripe_connected"] = False
+  save_users(users)
+  return ("", 204)
 
 # ----------------------------
-# Auth (email+password) & Google OAuth (+cookies)
+# Auth & Google OAuth
 # ----------------------------
 @app.route('/api/signup', methods=['POST'])
 def signup():
-    data = request.json or {}
+    data = request.json
     email        = data.get('email')
-    password     = data.get('password')  # TODO: hash with bcrypt in prod
+    password     = data.get('password')
     businessType = data.get('businessType','')
     businessName = data.get('businessName',businessType)
     name         = data.get('name','')
@@ -971,7 +956,7 @@ def signup():
         return jsonify({'error':'User already exists'}), 409
     trial_start = datetime.datetime.utcnow().isoformat()
     users[email] = {
-        'password':              password,  # TODO: store hashed
+        'password':              password,
         'businessType':          businessType,
         'business':              businessName,
         'name':                  name,
@@ -983,12 +968,9 @@ def signup():
     }
     save_users(users)
     try:
-        # Welcome email (non-blocking if it fails)
-        send_email_with_template(email, SG_TEMPLATE_WELCOME, {"user_name": name or "", "business_type": businessName or ""}, from_email="welcome@retainai.ca")
+        send_welcome_email(email, name, businessName)
     except Exception as e:
-        app.logger.warning(f"[WARN] Couldn't send welcome email: {e}")
-
-    # Start checkout session
+        print(f"[WARN] Couldn't send welcome email: {e}")
     try:
         session = stripe.checkout.Session.create(
             payment_method_types=['card'],
@@ -996,26 +978,24 @@ def signup():
             line_items=[{'price': STRIPE_PRICE_ID, 'quantity': 1}],
             customer_email=email,
             subscription_data={'trial_period_days': 14, 'metadata': {'user_email': email}},
-            success_url=f"{FRONTEND_BASE}/login?paid=1",
-            cancel_url=f"{FRONTEND_BASE}/login?canceled=1",
+            success_url=f"{FRONTEND_URL}/login?paid=1",
+            cancel_url=f"{FRONTEND_URL}/login?canceled=1",
         )
-        resp = jsonify({'checkoutUrl': session.url})
-        _set_session_cookie(resp, email)  # set cookie so frontend can pick it up
-        return resp, 200
+        return jsonify({'checkoutUrl': session.url}), 200
     except Exception as e:
-        app.logger.error(f"[STRIPE ERROR] {e}")
+        print(f"[STRIPE ERROR] {e}")
         return jsonify({'error': 'Could not start payment process.'}), 500
 
 @app.route('/api/login', methods=['POST'])
 def login():
-    data     = request.json or {}
+    data     = request.json
     email    = data.get('email')
     password = data.get('password')
     users    = load_users()
     user     = users.get(email)
     if not user or user['password'] != password or user.get('status') != 'active':
         return jsonify({'error': 'Invalid credentials or account not active'}), 401
-    payload = {
+    return jsonify({
         'message': 'Login successful',
         'user': {
             'email':             email,
@@ -1028,20 +1008,11 @@ def login():
             'stripe_account_id': user.get('stripe_account_id'),
             'stripe_connected':  user.get('stripe_connected', False)
         }
-    }
-    resp = jsonify(payload)
-    _set_session_cookie(resp, email)
-    return resp, 200
-
-@app.route('/api/logout', methods=['POST'])
-def logout():
-    resp = jsonify({"ok": True})
-    _clear_session_cookie(resp)
-    return resp, 200
+    }), 200
 
 @app.route('/api/oauth/google', methods=['POST'])
 def google_oauth():
-    data = request.json or {}
+    data = request.json
     token = data.get('credential')
     if not token:
         return jsonify({'error': 'No Google token provided'}), 400
@@ -1071,7 +1042,7 @@ def google_oauth():
             if not user.get('picture') and picture:
                 user['picture'] = picture
         save_users(users)
-        payload = {
+        return jsonify({
             'message': 'Google login successful',
             'user': {
                 'email':             email,
@@ -1082,17 +1053,14 @@ def google_oauth():
                 'stripe_account_id': users[email].get('stripe_account_id'),
                 'stripe_connected':  users[email].get('stripe_connected', False)
             }
-        }
-        resp = jsonify(payload)
-        _set_session_cookie(resp, email)
-        return resp, 200
+        }), 200
     except Exception as e:
-        app.logger.error("[GOOGLE OAUTH ERROR] %s", e)
+        print("[GOOGLE OAUTH ERROR]", e)
         return jsonify({'error': 'Invalid Google token'}), 401
 
 @app.route('/api/oauth/google/complete', methods=['POST'])
 def google_oauth_complete():
-    data         = request.json or {}
+    data         = request.json
     email        = data.get('email')
     businessType = data.get('businessType','')
     businessName = data.get('businessName', businessType)
@@ -1100,7 +1068,7 @@ def google_oauth_complete():
     logo         = data.get('logo','')
     people       = data.get('people','')
     users = load_users()
-    if not email or email not in users:
+    if not email or not email in users:
         return jsonify({'error': 'User not found'}), 404
     users[email].update({
         'businessType':    businessType,
@@ -1110,7 +1078,7 @@ def google_oauth_complete():
         'people':          people
     })
     save_users(users)
-    payload = {
+    return jsonify({
         'message': 'Profile updated',
         'user': {
             'email':             email,
@@ -1122,10 +1090,7 @@ def google_oauth_complete():
             'stripe_account_id': users[email].get('stripe_account_id'),
             'stripe_connected':  users[email].get('stripe_connected', False)
         }
-    }
-    resp = jsonify(payload)
-    _set_session_cookie(resp, email)
-    return resp, 200
+    }), 200
 
 @app.route("/api/google/auth-url", methods=["GET"])
 def google_auth_url():
@@ -1252,16 +1217,10 @@ def google_events(email):
         return jsonify({"error": resp.text}), 500
     return jsonify(resp.json())
 
-# ------------- END PART 1/2 -------------
-# ================================
-# ✅ app.py — PART 2/2 (append)
-# ================================
-
+# ============================================================
+# WhatsApp Cloud API — 24h gate, templates, webhook, etc.
+# ============================================================
 from datetime import datetime as dt, timedelta
-
-# ---------------------------------------------------
-# WhatsApp Cloud API — helpers + routes
-# ---------------------------------------------------
 
 # cache template approvals (5m)
 _TEMPLATE_CACHE = {}   # (name, lang_norm) -> {"status": "...", "checked_at": dt}
@@ -1271,12 +1230,13 @@ _TEMPLATE_TTL_SECONDS = 300
 _MSG_CACHE = {}  # key=(user_email,lead_id) -> {"at": dt, "data": [...]}
 _MSG_CACHE_TTL_SECONDS = 2
 
-def _normalize_lang_wa(code: str) -> str:
+def _normalize_lang(code: str) -> str:
     """
     Keep 'en' as 'en'. Only normalize case/format:
       - ll      -> ll
       - ll_CC   -> ll_CC
     """
+    import os
     default = (os.getenv("WHATSAPP_TEMPLATE_LANG") or "en").strip()
     if not code:
         return default
@@ -1288,12 +1248,13 @@ def _normalize_lang_wa(code: str) -> str:
         return parts[0].lower() + "_" + parts[1].upper()  # 'en_us' -> 'en_US'
     return c.lower()
 
-def _primary_lang_wa(code: str) -> str:
+def _primary_lang(code: str) -> str:
     if not code: return ""
     return code.replace("-", "_").split("_", 1)[0].lower()
 
 def _norm_wa(s: str) -> str:
     """Normalize to digits; auto-prefix 10-digit NANP numbers with DEFAULT_COUNTRY_CODE."""
+    import os, re
     d = re.sub(r"\D", "", s or "")
     dcc = os.getenv("DEFAULT_COUNTRY_CODE", "1")
     if len(d) == 10 and dcc.isdigit():
@@ -1307,7 +1268,7 @@ def _lead_matches_wa(lead, wa_digits):
     return False
 
 def find_user_by_whatsapp(wa_id):
-    wa = _norm_wa(wa_id or "")
+    wa = _norm_wa(wa_id)
     leads_by_user = load_leads()
     for user_email, leads in leads_by_user.items():
         for lead in leads:
@@ -1316,7 +1277,7 @@ def find_user_by_whatsapp(wa_id):
     return None
 
 def find_lead_by_whatsapp(wa_id):
-    wa = _norm_wa(wa_id or "")
+    wa = _norm_wa(wa_id)
     leads_by_user = load_leads()
     for user_email, leads in leads_by_user.items():
         for lead in leads:
@@ -1325,11 +1286,36 @@ def find_lead_by_whatsapp(wa_id):
     return None
 
 def _wa_env():
+    import os
     token = os.getenv("WHATSAPP_TOKEN")
     phone_id = os.getenv("WHATSAPP_PHONE_ID")
     if not token or not phone_id:
         raise RuntimeError("WhatsApp credentials missing")
     return token, phone_id
+
+def build_personalized_body(user_email: str, lead_id: str, raw_text: str) -> str:
+    users = load_users()
+    leads_by_user = load_leads()
+    u = users.get(user_email or "", {})
+    user_name = (u.get("name") or "").strip()
+    business  = (u.get("business") or "").strip()
+    lead_name = ""
+    if user_email and lead_id:
+        for ld in leads_by_user.get(user_email, []):
+            if str(ld.get("id")) == str(lead_id):
+                lead_name = (ld.get("name") or "").strip()
+                break
+    parts = []
+    if lead_name: parts.append(f"Hi {lead_name},")
+    who = "it’s "
+    if user_name and business: who += f"{user_name} from {business}"
+    elif user_name: who += user_name
+    elif business: who += business
+    else: who = ""
+    if who: parts.append(who + " —")
+    raw = (raw_text or "").strip()
+    body = (" ".join(parts) + " " + raw) if parts else raw
+    return body[:4000] if len(body) > 4000 else body
 
 def get_last_inbound_ts(user_email: str, lead_id: str):
     chats = load_chats()
@@ -1348,156 +1334,21 @@ def within_24h(user_email: str, lead_id: str) -> bool:
         return False
     return (dt.utcnow() - last_dt) <= timedelta(hours=24)
 
-# Cache phone->WABA resolution (5 min)
-_WABA_RES = {"id": None, "checked_at": None}
-_WABA_TTL_SECONDS = 300
-
-def _resolve_waba_id_wa(force: bool = False) -> str:
-    now = dt.utcnow()
-    if (
-        not force
-        and _WABA_RES["id"]
-        and _WABA_RES["checked_at"]
-        and (now - _WABA_RES["checked_at"]).total_seconds() < _WABA_TTL_SECONDS
-    ):
-        return _WABA_RES["id"]
-    try:
-        token, phone_id = _wa_env()
-        url = f"https://graph.facebook.com/v20.0/{phone_id}"
-        headers = {"Authorization": f"Bearer {token}"}
-        params = {"fields": "whatsapp_business_account{id},display_phone_number"}
-        r = pyrequests.get(url, headers=headers, params=params, timeout=30)
-        wid = None
-        if r.ok:
-            wid = (((r.json() or {}).get("whatsapp_business_account") or {}).get("id"))
-        if not wid:
-            wid = os.getenv("WHATSAPP_WABA_ID") or os.getenv("WHATSAPP_BUSINESS_ID", "")
-        _WABA_RES["id"] = wid
-        _WABA_RES["checked_at"] = now
-        app.logger.info("[WA WABA] resolved WABA id=%s", wid)
-        return wid
-    except Exception as e:
-        app.logger.warning("[WA WABA] resolve error: %s", e)
-        return os.getenv("WHATSAPP_WABA_ID") or os.getenv("WHATSAPP_BUSINESS_ID", "")
-
-def _fetch_templates_for_waba_wa(waba_id: str):
-    headers = {"Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN')}"}
-    params = {"fields": "name,language,status,category,components", "limit": 200}
-    url = f"https://graph.facebook.com/v20.0/{waba_id}/message_templates"
-    return pyrequests.get(url, headers=headers, params=params, timeout=30)
-
-def _fetch_templates_raw_wa():
-    waba_id = _resolve_waba_id_wa()
-    return _fetch_templates_for_waba_wa(waba_id)
-
-def _lookup_template_status(name: str, lang_api: str, force: bool = False) -> str:
-    """Return status string. Exact (name+lang), else fallback to same primary language."""
-    if not os.getenv("WHATSAPP_WABA_ID") and not os.getenv("WHATSAPP_PHONE_ID"):
-        return "UNKNOWN"
-
-    normalized_name = (name or os.getenv("WHATSAPP_TEMPLATE_DEFAULT", "") or "").strip()
-    lang_norm = _normalize_lang_wa(lang_api or os.getenv("WHATSAPP_TEMPLATE_LANG", "en") or "")
-    key = (normalized_name, lang_norm)
-
-    now = dt.utcnow()
-    if not force:
-        cached = _TEMPLATE_CACHE.get(key)
-        if cached and (now - cached["checked_at"]) < timedelta(seconds=_TEMPLATE_TTL_SECONDS):
-            return cached["status"]
-
-    try:
-        r = _fetch_templates_raw_wa()
-        items = (r.json() or {}).get("data", []) if r.ok else []
-        primary = _primary_lang_wa(lang_norm)
-        exact_status = None
-        fallback_status = None
-        for t in items:
-            if (t.get("name") or "") != normalized_name:
-                continue
-            tl_norm = _normalize_lang_wa(t.get("language") or "")
-            if tl_norm == lang_norm:
-                exact_status = (t.get("status") or "UNKNOWN")
-            if _primary_lang_wa(tl_norm) == primary:
-                st = (t.get("status") or "UNKNOWN")
-                if (fallback_status or "").upper() != "APPROVED":
-                    fallback_status = st
-
-        status = exact_status or fallback_status or "PENDING"
-        _TEMPLATE_CACHE[key] = {"status": status, "checked_at": now}
-        return status
-    except Exception as e:
-        app.logger.warning(f"[WA TPL CHECK ERROR] {e}")
-        _TEMPLATE_CACHE[key] = {"status": "UNKNOWN", "checked_at": now}
-        return "UNKNOWN"
-
-def is_template_approved(name: str, lang: str, force: bool = False) -> bool:
-    return _lookup_template_status(name, lang, force).upper() == "APPROVED"
-
-def send_wa_text(to_number: str, body: str):
-    to = _norm_wa(to_number)
-    token, phone_id = _wa_env()
-    ver = os.getenv("WHATSAPP_API_VERSION", "v20.0")
-    url = f"https://graph.facebook.com/{ver}/{phone_id}/messages"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    payload = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": body}}
-    resp = pyrequests.post(url, headers=headers, json=payload, timeout=30)
-    if resp.status_code >= 400:
-        app.logger.error("[WA SEND ERROR] %s %s", resp.status_code, resp.text)
-    return resp
-
-def send_wa_template(to_number: str, template_name: str, lang_code: str, parameters: list | None = None):
-    to = _norm_wa(to_number)
-    token, phone_id = _wa_env()
-    ver = os.getenv("WHATSAPP_API_VERSION", "v20.0")
-    url = f"https://graph.facebook.com/{ver}/{phone_id}/messages"
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    components = []
-    if parameters is not None:
-        components = [{"type": "body", "parameters": [{"type": "text", "text": str(p)} for p in parameters]}]
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "template",
-        "template": {"name": template_name, "language": {"code": _normalize_lang_wa(lang_code)}, "components": components}
-    }
-    resp = pyrequests.post(url, headers=headers, json=payload, timeout=30)
-    if resp.status_code >= 400:
-        app.logger.error("[WA TEMPLATE ERROR] %s %s", resp.status_code, resp.text)
-    return resp
-
-@app.get("/api/whatsapp/health")
-def whatsapp_health():
-    return jsonify({
-        "ok": True,
-        "has_token": bool(os.getenv("WHATSAPP_TOKEN")),
-        "has_phone_id": bool(os.getenv("WHATSAPP_PHONE_ID")),
-        "has_waba_id": bool(os.getenv("WHATSAPP_WABA_ID")),
-        "default_template": os.getenv("WHATSAPP_TEMPLATE_DEFAULT"),
-        "default_lang_ui": _primary_lang_wa(os.getenv("WHATSAPP_TEMPLATE_LANG", "en")) or "en",
-        "default_lang_api": _normalize_lang_wa(os.getenv("WHATSAPP_TEMPLATE_LANG", "en")),
-    }), 200
-
-@app.get("/api/whatsapp/templates")
-def list_templates():
-    if not os.getenv("WHATSAPP_TOKEN") or not os.getenv("WHATSAPP_PHONE_ID"):
-        return jsonify({"error": "Missing token or phone id"}), 400
-    waba_id = _resolve_waba_id_wa()
-    r = _fetch_templates_raw_wa()
-    try:
-        data = r.json()
-        for t in data.get("data", []):
-            t["normalized_language"] = _normalize_lang_wa(t.get("language",""))
-    except Exception:
-        data = {"raw": r.text}
-    return jsonify({"status": r.status_code, "waba_id": waba_id, "data": data}), r.status_code
-
 @app.get("/api/whatsapp/template-info")
 def template_info():
+    """
+    Returns the components for a given template name from the sender phone's WABA,
+    including a computed body parameter count and positions.
+    """
+    import os
+    import requests as pyrequests
+
     name = (request.args.get("name") or "").strip()
     if not name:
         return jsonify({"error": "name is required"}), 400
 
-    waba_id = _resolve_waba_id_wa()
+    # resolve WABA via phone
+    waba_id = _resolve_waba_id()
     headers = {"Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN')}"}
     params = {"fields": "name,language,status,category,components", "limit": 200}
     url = f"https://graph.facebook.com/v20.0/{waba_id}/message_templates"
@@ -1526,7 +1377,7 @@ def template_info():
 
         out.append({
             "name": t.get("name"),
-            "language": _normalize_lang_wa(t.get("language") or ""),
+            "language": _normalize_lang(t.get("language") or ""),
             "status": (t.get("status") or "").upper(),
             "body_param_count": body_param_count,
             "components": comps
@@ -1536,15 +1387,180 @@ def template_info():
         return jsonify({"error": "template_not_found_on_phone_waba", "name": name, "waba_id": waba_id}), 404
     return jsonify({"waba_id": waba_id, "templates": out}), 200
 
+def send_wa_text(to_number: str, body: str):
+    import os
+    import requests as pyrequests
+
+    to = _norm_wa(to_number)
+    token, phone_id = _wa_env()
+    ver = os.getenv("WHATSAPP_API_VERSION", "v20.0")
+    url = f"https://graph.facebook.com/{ver}/{phone_id}/messages"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    payload = {"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": body}}
+    resp = pyrequests.post(url, headers=headers, json=payload, timeout=30)
+    if resp.status_code >= 400:
+        app.logger.error("[WA SEND ERROR] %s %s", resp.status_code, resp.text)
+    return resp
+
+def send_wa_template(to_number: str, template_name: str, lang_code: str, parameters: list | None = None):
+    import os
+    import requests as pyrequests
+
+    to = _norm_wa(to_number)
+    token, phone_id = _wa_env()
+    ver = os.getenv("WHATSAPP_API_VERSION", "v20.0")
+    url = f"https://graph.facebook.com/{ver}/{phone_id}/messages"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    components = []
+    if parameters is not None:
+        components = [{"type": "body", "parameters": [{"type": "text", "text": str(p)} for p in parameters]}]
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "template",
+        "template": {"name": template_name, "language": {"code": _normalize_lang(lang_code)}, "components": components}
+    }
+    resp = pyrequests.post(url, headers=headers, json=payload, timeout=30)
+    if resp.status_code >= 400:
+        app.logger.error("[WA TEMPLATE ERROR] %s %s", resp.status_code, resp.text)
+    return resp
+
+def _fetch_templates_raw():
+    import os
+    import requests as pyrequests
+    waba_id = _resolve_waba_id()
+    url = f"https://graph.facebook.com/v20.0/{waba_id}/message_templates"
+    params = {"fields": "name,language,status,category", "limit": 200}
+    headers = {"Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN')}"}
+    return pyrequests.get(url, headers=headers, params=params, timeout=30)
+
+def _lookup_template_status(name: str, lang_api: str, force: bool = False) -> str:
+    """Return status string. Exact (name+lang), else fallback to same primary language."""
+    import os
+    if not os.getenv("WHATSAPP_WABA_ID") and not os.getenv("WHATSAPP_PHONE_ID"):
+        return "UNKNOWN"
+
+    normalized_name = (name or os.getenv("WHATSAPP_TEMPLATE_DEFAULT", "") or "").strip()
+    lang_norm = _normalize_lang(lang_api or os.getenv("WHATSAPP_TEMPLATE_LANG", "en") or "")
+    key = (normalized_name, lang_norm)
+
+    now = dt.utcnow()
+    if not force:
+        cached = _TEMPLATE_CACHE.get(key)
+        if cached and (now - cached["checked_at"]) < timedelta(seconds=_TEMPLATE_TTL_SECONDS):
+            return cached["status"]
+
+    try:
+        r = _fetch_templates_raw()
+        items = (r.json() or {}).get("data", []) if r.ok else []
+        primary = _primary_lang(lang_norm)
+        exact_status = None
+        fallback_status = None
+        for t in items:
+            if (t.get("name") or "") != normalized_name:
+                continue
+            tl_norm = _normalize_lang(t.get("language") or "")
+            if tl_norm == lang_norm:
+                exact_status = (t.get("status") or "UNKNOWN")
+            if _primary_lang(tl_norm) == primary:
+                st = (t.get("status") or "UNKNOWN")
+                if (fallback_status or "").upper() != "APPROVED":
+                    fallback_status = st
+
+        status = exact_status or fallback_status or "PENDING"
+        _TEMPLATE_CACHE[key] = {"status": status, "checked_at": now}
+        return status
+    except Exception as e:
+        app.logger.warning(f"[WA TPL CHECK ERROR] {e}")
+        _TEMPLATE_CACHE[key] = {"status": "UNKNOWN", "checked_at": now}
+        return "UNKNOWN"
+
+def is_template_approved(name: str, lang: str, force: bool = False) -> bool:
+    return _lookup_template_status(name, lang, force).upper() == "APPROVED"
+
+# Cache phone->WABA resolution (5 min)
+_WABA_RES = {"id": None, "checked_at": None}
+_WABA_TTL_SECONDS = 300
+
+def _resolve_waba_id(force: bool = False) -> str:
+    import os
+    import requests as pyrequests
+
+    now = dt.utcnow()
+    if (
+        not force
+        and _WABA_RES["id"]
+        and _WABA_RES["checked_at"]
+        and (now - _WABA_RES["checked_at"]).total_seconds() < _WABA_TTL_SECONDS
+    ):
+        return _WABA_RES["id"]
+    try:
+        token, phone_id = _wa_env()
+        url = f"https://graph.facebook.com/v20.0/{phone_id}"
+        headers = {"Authorization": f"Bearer {token}"}
+        params = {"fields": "whatsapp_business_account{id},display_phone_number"}
+        r = pyrequests.get(url, headers=headers, params=params, timeout=30)
+        wid = None
+        if r.ok:
+            wid = (((r.json() or {}).get("whatsapp_business_account") or {}).get("id"))
+        if not wid:
+            wid = os.getenv("WHATSAPP_WABA_ID") or os.getenv("WHATSAPP_BUSINESS_ID", "")
+        _WABA_RES["id"] = wid
+        _WABA_RES["checked_at"] = now
+        app.logger.info("[WA WABA] resolved WABA id=%s", wid)
+        return wid
+    except Exception as e:
+        app.logger.warning("[WA WABA] resolve error: %s", e)
+        import os as _os
+        return _os.getenv("WHATSAPP_WABA_ID") or _os.getenv("WHATSAPP_BUSINESS_ID", "")
+
+def _fetch_templates_for_waba(waba_id: str):
+    import os
+    import requests as pyrequests
+    headers = {"Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN')}"}
+    params = {"fields": "name,language,status,category", "limit": 200}
+    url = f"https://graph.facebook.com/v20.0/{waba_id}/message_templates"
+    return pyrequests.get(url, headers=headers, params=params, timeout=30)
+
+# ---------- WhatsApp Routes ----------
+@app.get("/api/whatsapp/health")
+def whatsapp_health():
+    import os
+    return jsonify({
+        "ok": True,
+        "has_token": bool(os.getenv("WHATSAPP_TOKEN")),
+        "has_phone_id": bool(os.getenv("WHATSAPP_PHONE_ID")),
+        "has_waba_id": bool(os.getenv("WHATSAPP_WABA_ID")),
+        "default_template": os.getenv("WHATSAPP_TEMPLATE_DEFAULT"),
+        "default_lang_ui": _primary_lang(os.getenv("WHATSAPP_TEMPLATE_LANG", "en")) or "en",
+        "default_lang_api": _normalize_lang(os.getenv("WHATSAPP_TEMPLATE_LANG", "en")),
+    }), 200
+
+@app.get("/api/whatsapp/templates")
+def list_templates():
+    import os
+    if not os.getenv("WHATSAPP_TOKEN") or not os.getenv("WHATSAPP_PHONE_ID"):
+        return jsonify({"error": "Missing token or phone id"}), 400
+    waba_id = _resolve_waba_id()
+    r = _fetch_templates_raw()
+    try:
+        data = r.json()
+        for t in data.get("data", []):
+            t["normalized_language"] = _normalize_lang(t.get("language",""))
+    except Exception:
+        data = {"raw": r.text}
+    return jsonify({"status": r.status_code, "waba_id": waba_id, "data": data}), r.status_code
+
 @app.get("/api/whatsapp/template-state")
 def template_state():
+    import os
     name = (request.args.get("name") or os.getenv("WHATSAPP_TEMPLATE_DEFAULT", "") or "").strip()
     lang = request.args.get("language_code") or os.getenv("WHATSAPP_TEMPLATE_LANG", "en") or ""
     force = request.args.get("force") == "1"
     status = _lookup_template_status(name, lang, force)
     return jsonify({
         "name": name,
-        "language": _normalize_lang_wa(lang),
+        "language": _normalize_lang(lang),
         "status": status.upper(),
         "approved": status.upper() == "APPROVED",
         "checked_at": dt.utcnow().isoformat() + "Z"
@@ -1552,13 +1568,14 @@ def template_state():
 
 @app.get("/api/whatsapp/window-state")
 def whatsapp_window_state():
+    import os
     user_email = request.args.get("user_email", "")
     lead_id    = request.args.get("lead_id", "")
     template_name = (request.args.get("template_name") or os.getenv("WHATSAPP_TEMPLATE_DEFAULT", "") or "").strip()
     lang_code     = request.args.get("language_code") or os.getenv("WHATSAPP_TEMPLATE_LANG", "en") or ""
     force = request.args.get("force") == "1"
 
-    lang_norm = _normalize_lang_wa(lang_code)
+    lang_norm = _normalize_lang(lang_code)
     inside = within_24h(user_email, lead_id)
     status = "APPROVED" if inside else _lookup_template_status(template_name, lang_norm, force)
 
@@ -1572,6 +1589,7 @@ def whatsapp_window_state():
         "canTemplate": (not inside) and (status.upper() == "APPROVED")
     }), 200
 
+# ---- throttle/cache helper for messages
 def _get_thread_cached(user_email, lead_id):
     key = (str(user_email or ""), str(lead_id or ""))
     now = dt.utcnow()
@@ -1618,9 +1636,19 @@ def set_optout():
 @app.route('/api/whatsapp/send', methods=['POST'])
 def send_whatsapp_message():
     """
-    Inside 24h: free text (requires 'message') — sends EXACTLY what the user typed.
-    Outside 24h: choose an approved template locale (exact -> same primary -> any).
+    Inside 24h: free text (requires 'message') — NOW sends EXACTLY what the user typed (no intro).
+    Outside 24h:
+      • Resolve the SENDER PHONE's WABA
+      • List templates from THAT WABA
+      • Choose locale:
+          1) exact requested if APPROVED
+          2) any APPROVED with same primary (e.g., en_*)
+          3) any APPROVED
+        If none approved → 409 with availableLanguages (no raw 132001 to client).
     """
+    import os
+    import requests as pyrequests
+
     data = request.get_json(force=True) or {}
 
     def clean(v):
@@ -1631,9 +1659,12 @@ def send_whatsapp_message():
     raw_msg         = clean(data.get("message") or data.get("text"))
     user_email      = clean(data.get("user_email"))
     lead_id         = clean(data.get("lead_id"))
+    # deprecated: skip_personalization support retained but ignored inside 24h
+    skip_personalization = bool(data.get("skip_personalization", False))
     template_name   = clean(data.get("template_name") or (os.getenv("WHATSAPP_TEMPLATE_DEFAULT") or ""))
     language_code   = clean(data.get("language_code") or (os.getenv("WHATSAPP_TEMPLATE_LANG") or "en"))
 
+    # Only include components if explicitly provided
     raw_params = data.get("template_params")
     if isinstance(raw_params, str):
         raw_params = [p.strip() for p in raw_params.split(",") if p.strip()]
@@ -1652,31 +1683,34 @@ def send_whatsapp_message():
 
     inside24 = within_24h(user_email, lead_id)
     requested_raw = language_code
-    requested     = _normalize_lang_wa(language_code)
-    primary       = _primary_lang_wa(requested)
+    requested     = _normalize_lang(language_code)
+    primary       = _primary_lang(requested)
     to_number     = _norm_wa(to_number)
 
     # Resolve the EXACT WABA tied to the PHONE we send from
-    waba_id = _resolve_waba_id_wa()
-    app.logger.info("[WA SEND] to=%s tpl=%s requested=%s (raw=%s) inside24h=%s waba=%s",
+    waba_id = _resolve_waba_id()
+    app.logger.info("[WA SEND V3] to=%s tpl=%s requested=%s (raw=%s) inside24h=%s waba=%s",
                     to_number, template_name, requested, requested_raw, inside24, waba_id)
 
     try:
         if inside24:
+            # === FIX: ALWAYS send the raw user text during the 24h window (no intro/prefix) ===
             if not raw_msg:
                 return jsonify({"ok": False, "error": "Message text required inside 24h"}), 400
-            resp = send_wa_text(to_number, raw_msg)
-            mode = "free_text"; used_lang = None; sent_text = raw_msg
+            body = raw_msg
+            resp = send_wa_text(to_number, body)
+            mode = "free_text"; sent_text = body; used_lang = None
 
         else:
             if not template_name:
                 return jsonify({"ok": False, "error": "Template name is required outside 24h.", "code": "TEMPLATE_REQUIRED_OUTSIDE_24H"}), 422
 
-            r_list = _fetch_templates_for_waba_wa(waba_id)
+            # List templates FROM THE PHONE'S WABA
+            r_list = _fetch_templates_for_waba(waba_id)
             if not getattr(r_list, "ok", False):
                 try: body = r_list.json()
                 except Exception: body = {"raw": r_list.text}
-                app.logger.error("[WA SEND] list_templates failed status=%s body=%s",
+                app.logger.error("[WA SEND V3] list_templates failed status=%s body=%s",
                                  getattr(r_list, "status_code", None), body)
                 return jsonify({
                     "ok": False,
@@ -1686,17 +1720,18 @@ def send_whatsapp_message():
                     "resp": body
                 }), 502
 
-            items = (r_list.json() or {}).get("data", []) or []
+            items = (r_list.json() or {}).get("data", [])
 
+            # Collect locales for this template name on THIS WABA
             locales = []
             for t in items:
                 if (t.get("name") or "") == template_name:
-                    ln = _normalize_lang_wa(t.get("language") or "")
+                    ln = _normalize_lang(t.get("language") or "")
                     st = (t.get("status") or "").upper()
                     locales.append({"language": ln, "status": st})
 
             if not locales:
-                app.logger.warning("[WA SEND] template not found on WABA: %s (waba=%s)", template_name, waba_id)
+                app.logger.warning("[WA SEND V3] template not found on phone's WABA: %s (waba=%s)", template_name, waba_id)
                 return jsonify({
                     "ok": False,
                     "error": f"Template '{template_name}' does not exist on this WABA.",
@@ -1707,7 +1742,7 @@ def send_whatsapp_message():
 
             exact = next((x for x in locales if x["language"] == requested), None)
             approved_any = [x for x in locales if x["status"] == "APPROVED"]
-            approved_same_primary = [x for x in approved_any if _primary_lang_wa(x["language"]) == primary]
+            approved_same_primary = [x for x in approved_any if _primary_lang(x["language"]) == primary]
 
             fallback_used = False
             fallback_reason = None
@@ -1722,7 +1757,7 @@ def send_whatsapp_message():
                 used_lang = approved_any[0]["language"]; fallback_used = True
                 fallback_reason = "requested_locale_missing_or_unapproved_any_approved_used"; reason = "fallback_any"
             else:
-                app.logger.info("[WA SEND] no approved locales for tpl=%s on waba=%s locales=%s", template_name, waba_id, locales)
+                app.logger.info("[WA SEND V3] no approved locales for tpl=%s on waba=%s locales=%s", template_name, waba_id, locales)
                 return jsonify({
                     "ok": False,
                     "error": "Template is not approved in any locale; cannot send outside 24h window.",
@@ -1733,10 +1768,11 @@ def send_whatsapp_message():
                     "availableLanguages": locales
                 }), 409
 
-            app.logger.info("[WA SEND] tpl=%s choose_lang=%s reason=%s requested=%s waba=%s locales=%s",
+            app.logger.info("[WA SEND V3] tpl=%s choose_lang=%s reason=%s requested=%s waba=%s locales=%s",
                             template_name, used_lang, reason, requested, waba_id, locales)
 
             resp = send_wa_template(to_number, template_name, used_lang, params)
+            # we persist an echo for UI; your frontend strips the tag for display
             sent_text = f"[template:{template_name}/{used_lang}] {raw_msg or ''}"
             mode = "template"
 
@@ -1748,7 +1784,7 @@ def send_whatsapp_message():
             err = {}
             try: err = result.get("error", {})
             except Exception: pass
-            app.logger.error("[WA SEND ERROR] status=%s error=%s", resp.status_code, resp.text)
+            app.logger.error("[WA SEND V3 ERROR] status=%s error=%s", resp.status_code, resp.text)
             return jsonify({
                 "ok": False,
                 "mode": mode,
@@ -1784,9 +1820,9 @@ def send_whatsapp_message():
             app.logger.warning("[WHATSAPP] save message/status error: %s", e)
 
         out = {"ok": True, "mode": mode, "status": resp.status_code, "message_id": msg_id,
-               "requestedLanguage": requested, "usedLanguage": used_lang if not inside24 else None,
+               "requestedLanguage": requested, "usedLanguage": used_lang,
                "waba_id": waba_id,
-               "fallbackUsed": (not inside24) and (used_lang is not None and used_lang != requested)}
+               "fallbackUsed": (used_lang is not None and used_lang != requested)}
         if mode == "template":
             out["availableLanguages"] = locales
             if out["fallbackUsed"]: out["fallbackReason"] = fallback_reason
@@ -1797,23 +1833,26 @@ def send_whatsapp_message():
     except pyrequests.RequestException as e:
         return jsonify({"ok": False, "error": f"Network error: {e}"}), 502
 
+
 @app.get("/api/whatsapp/debug/template-locales")
 def debug_template_locales():
-    r = _fetch_templates_raw_wa()
+    import os
+    r = _fetch_templates_raw()
     name = (request.args.get("name") or "").strip()
     items = (r.json() or {}).get("data", []) if r.ok else []
-    locales = [{"language": _normalize_lang_wa(t.get("language") or ""), "status": (t.get("status") or "").upper()}
+    locales = [{"language": _normalize_lang(t.get("language") or ""), "status": (t.get("status") or "").upper()}
                for t in items if (t.get("name") or "") == name] if name else []
     token, phone_id = _wa_env()
     return jsonify({
         "phone_id": phone_id,
-        "resolved_waba_id": _resolve_waba_id_wa(),
+        "resolved_waba_id": _resolve_waba_id(),
         "template_name": name or None,
         "locales": locales,
         "raw_status": r.status_code
     }), 200
 
 def _verify_meta_signature(raw_body: bytes, header_sig: str) -> bool:
+    import os, hmac, hashlib
     secret = os.getenv("APP_SECRET") or os.getenv("META_APP_SECRET")
     if not secret or not header_sig:
         return True
@@ -1827,6 +1866,7 @@ def _verify_meta_signature(raw_body: bytes, header_sig: str) -> bool:
 
 @app.route("/api/whatsapp/webhook", methods=["GET", "POST"])
 def whatsapp_webhook():
+    import os
     if request.method == "GET":
         if request.args.get("hub.verify_token") == (os.getenv("WHATSAPP_VERIFY_TOKEN") or ""):
             return request.args.get("hub.challenge") or "Verified", 200
@@ -1911,12 +1951,12 @@ def whatsapp_webhook():
 
     return "OK", 200
 
-# ---------------------------------------------------
-# AI helpers (reply drafts)
-# ---------------------------------------------------
-
+# --- AI: lightweight prompt for chat composer ---
 @app.post("/api/ai-prompt")
 def ai_prompt():
+    import os, re
+    import requests
+
     try:
         data = request.get_json(force=True) or {}
     except Exception:
@@ -1955,10 +1995,9 @@ def ai_prompt():
                 last_inbound = t.strip()
                 break
 
+    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
     if not OPENROUTER_API_KEY:
-        # safe fallback
-        prompt = f"Sounds good — if it helps, I can get you booked with {business}. Would you like a link?"
-        return jsonify({"prompt": prompt}), 200
+        return jsonify({"error": "OPENROUTER_API_KEY is not configured"}), 500
 
     sys_msg = "You are a CRM messaging assistant. Output only the message body (no greetings or signatures)."
     user_msg = (
@@ -1973,7 +2012,7 @@ def ai_prompt():
     )
 
     try:
-        r = pyrequests.post(
+        r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -2013,104 +2052,19 @@ def ai_prompt():
         app.logger.warning(f"[AI PROMPT ERROR] {e}")
         return jsonify({"error": "Failed to get AI response"}), 502
 
-@app.route('/api/send-ai-message', methods=['POST'])
-def send_ai_message():
-    try:
-        body = request.get_json(force=True) or {}
-    except Exception:
-        return jsonify({"error": "Invalid JSON payload"}), 400
+# =================================================================
+# AUTOMATIONS (INLINE) — Blueprint + Engine (prod-ready routes)
+# =================================================================
+# Assumes you already have: app (Flask), request, jsonify, os, json,
+# datetime, uuid, urlparse, List, Dict, Any, Optional, requests,
+# and your app-level helpers: load_leads, save_leads, load_chats,
+# save_chats, SENDGRID_API_KEY, SENDER_EMAIL, OPENROUTER_API_KEY,
+# FILE_AUTOMATIONS, FILE_STATE, FILE_NOTIFICATIONS, FILE_USERS, etc.
+# =================================================================
 
-    lead_email    = (body.get("leadEmail") or "").strip()
-    user_email    = (body.get("userEmail") or "").strip()
-    subject       = (body.get("subject") or "").strip() or "Message from RetainAI"
-    message       = (body.get("message") or "").strip()
-    prompt_type   = (body.get("promptType") or "followup").strip().lower()
-
-    lead_name     = (body.get("leadName") or "").strip()
-    user_name     = (body.get("userName") or "").strip()
-    business_name = (body.get("businessName") or "").strip()
-
-    if not lead_email or not message:
-        return jsonify({"error": "leadEmail and message are required"}), 400
-
-    template_id = PROMPT_TYPE_TO_TEMPLATE.get(prompt_type) or PROMPT_TYPE_TO_TEMPLATE.get("followup")
-    if not template_id:
-        return jsonify({"error": "No template configured for this promptType"}), 500
-
-    first_name = (lead_name.split(" ", 1)[0] if lead_name else "")
-    dynamic = {
-        "subject": subject,
-        "lead_name": lead_name,
-        "lead_first_name": first_name,
-        "user_name": user_name,
-        "business_name": business_name,
-        "message": message,
-        "message_body": message,
-        "body": message,
-        "year": datetime.datetime.now().year,
-        "prompt_type": prompt_type,
-    }
-
-    accepted = send_email_with_template(
-        to_email=lead_email,
-        template_id=template_id,
-        dynamic_data=dynamic,
-        subject=subject,
-        from_email=SENDER_EMAIL,
-        reply_to_email=user_email or None
-    )
-
-    if not accepted:
-        return jsonify({"ok": False, "template_id": template_id, "accepted": False}), 502
-
-    return jsonify({"ok": True, "template_id": template_id, "accepted": True}), 200
-
-@app.route('/api/generate-message', methods=['POST'])
-def generate_message():
-    data = request.json or {}
-    lead = data.get("lead", {})
-    last_message = data.get("last_message", "")
-    user_business = data.get("user_business", "business")
-    lead_name = lead.get('name', '')
-    user_name = data.get("user_name", "")
-    prompt = (
-        f"You are a professional, emotionally intelligent assistant for a {user_business} business. "
-        f"Given the context below, write ONLY a direct, warm, natural message that could be sent in chat or email, with no greeting lines, subjects, or sign-offs. Only output the message body.\n\n"
-        f"Lead Name: {lead_name}\n"
-        f"Tags: {', '.join(lead.get('tags', []))}\n"
-        f"Notes: {lead.get('notes', '-')}\n"
-        f"Most recent message from the lead: \"{last_message}\"\n"
-        "Your reply should be concise, helpful, and conversational."
-    )
-    if not OPENROUTER_API_KEY:
-        return jsonify({"message": "Thanks for the note — want me to grab you a spot? I can send over the booking link."})
-    try:
-        r = pyrequests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "openai/gpt-4o",
-                "messages": [
-                    {"role": "system", "content": "Output only the message body."},
-                    {"role": "user", "content": prompt},
-                ],
-                "max_tokens": 160,
-                "temperature": 0.7,
-            },
-            timeout=25,
-        )
-        j = r.json() if r.ok else {}
-        msg = ((j.get("choices") or [{}])[0].get("message", {}) or {}).get("content", "").strip()
-        return jsonify({"message": msg or "Just following up to see if you'd like me to send the booking link."})
-    except Exception:
-        return jsonify({"message": "Just following up to see if you'd like me to send the booking link."})
-
-# ---------------------------------------------------
-# AUTOMATIONS (inline engine + API)
-# ---------------------------------------------------
+# ---------- Channels ----------
+CHANNEL_EMAIL = "email"
+CHANNEL_WHATSAPP = "whatsapp"
 
 # ---------- Utilities ----------
 def _now_utc() -> datetime.datetime:
@@ -2212,20 +2166,22 @@ def _in_quiet_hours(now_utc: datetime.datetime, profile: Dict[str, Any]) -> bool
         return qs <= hour < qe
 
 # ---------- Triggers & Conditions ----------
+from datetime import timedelta as _td
+
 def trig_no_reply(lead: Dict[str, Any], days: int) -> bool:
     last_inbound = _dt(lead.get("last_inbound_at"))
     last_outbound = _dt(lead.get("last_outbound_at"))
     last_any = _dt(lead.get("last_activity_at")) or last_inbound or last_outbound
     if not last_any:
-        created = _dt(lead.get("createdAt")) or _dt(lead.get("created_at")) or (_now_utc() - timedelta(days=999))
-        return _now_utc() - created >= timedelta(days=days)
-    if last_inbound and (_now_utc() - last_inbound < timedelta(days=days)):
+        created = _dt(lead.get("createdAt")) or _dt(lead.get("created_at")) or (_now_utc() - _td(days=999))
+        return _now_utc() - created >= _td(days=days)
+    if last_inbound and (_now_utc() - last_inbound < _td(days=days)):
         return False
-    return _now_utc() - last_any >= timedelta(days=days)
+    return _now_utc() - last_any >= _td(days=days)
 
 def trig_new_lead(lead: Dict[str, Any], within_hours: int = 24) -> bool:
     created = _dt(lead.get("createdAt")) or _dt(lead.get("created_at"))
-    return bool(created and (_now_utc() - created <= timedelta(hours=within_hours)))
+    return bool(created and (_now_utc() - created <= _td(hours=within_hours)))
 
 def trig_no_show(lead: Dict[str, Any]) -> bool:
     for appt in (lead.get("appointments") or []):
@@ -2235,13 +2191,13 @@ def trig_no_show(lead: Dict[str, Any]) -> bool:
 
 def cond_no_reply_since(lead: Dict[str, Any], days: int) -> bool:
     last_inbound = _dt(lead.get("last_inbound_at"))
-    return not last_inbound or (_now_utc() - last_inbound >= timedelta(days=days))
+    return not last_inbound or (_now_utc() - last_inbound >= _td(days=days))
 
 def cond_no_booking_since(lead: Dict[str, Any], days: int = 2) -> bool:
     for appt in (lead.get("appointments") or []):
         if str(appt.get("status") or "").lower() in ("booked", "scheduled", "confirmed"):
             upd = _dt(appt.get("updated_at"))
-            if upd and (_now_utc() - upd < timedelta(days=days)):
+            if upd and (_now_utc() - upd < _td(days=days)):
                 return False
     return True
 
@@ -2270,7 +2226,9 @@ def send_email_sendgrid_auto(to_email: str, subject: str, html: str, business_na
         print("[Automations] SENDGRID_API_KEY missing; skipping email send (simulated).")
         return True
     try:
-        sg = SendGridAPIClient(SENDGRID_API_KEY)
+        import sendgrid
+        from sendgrid.helpers.mail import Mail, Email
+        sg = sendgrid.SendGridAPIClient(SENDGRID_API_KEY)
         msg = Mail(
             from_email=Email(SENDER_EMAIL, business_name or "RetainAI"),
             to_emails=to_email,
@@ -2298,7 +2256,7 @@ def ai_draft_message(context: Dict[str, Any]) -> str:
             f"Lead context: {json.dumps(context.get('lead', {}))}.\n"
             "Tone: warm, human, no emojis, 1 sentence if possible."
         )
-        r = pyrequests.post(
+        r = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
             json={
@@ -2318,7 +2276,36 @@ def ai_draft_message(context: Dict[str, Any]) -> str:
         print("[Automations] AI draft error:", e)
         return f"Quick check-in — want to grab a spot with {business_name}? {booking}"
 
-# ---------- WhatsApp helpers for Automations ----------
+# ---------- WhatsApp helpers ----------
+def _normalize_lang(s: str) -> str:
+    s = (s or "").strip().replace("-", "_")
+    return s.lower()
+
+def _primary_lang(s: str) -> str:
+    s = _normalize_lang(s)
+    return s.split("_", 1)[0] if s else ""
+
+def _resolve_waba_id() -> Optional[str]:
+    return os.getenv("WHATSAPP_WABA_ID") or None
+
+def _fetch_templates_for_waba(waba_id: Optional[str]):
+    class _Resp:
+        ok = False
+        def json(self): return {}
+    if not waba_id:
+        return _Resp()
+    try:
+        url = f"https://graph.facebook.com/v20.0/{waba_id}/message_templates"
+        headers = {"Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN','')}"}
+        params = {"fields": "name,language,status,components", "limit": 200}
+        r = requests.get(url, headers=headers, params=params, timeout=30)
+        return r
+    except Exception:
+        return _Resp()
+
+# These are referenced by the engine; you likely already have implementations:
+# within_24h(user_email, lead_id), send_wa_text(to, text), send_wa_template(to, name, lang, params)
+
 def _append_chat_message(user_email: str, lead_id: str, text: str):
     try:
         chats = load_chats()
@@ -2337,33 +2324,35 @@ def _append_chat_message(user_email: str, lead_id: str, text: str):
         print("[Automations] append_chat_message error:", e)
 
 def _choose_wa_template(preferred_name: str | None, preferred_lang: str | None):
+    import os
     name = (preferred_name or os.getenv("WHATSAPP_TEMPLATE_DEFAULT", "")).strip()
     if not name:
         return None, None, 0
 
-    waba_id = _resolve_waba_id_wa()
-    r_list = _fetch_templates_for_waba_wa(waba_id)
+    waba_id = _resolve_waba_id()
+    r_list = _fetch_templates_for_waba(waba_id)
     items = (r_list.json() or {}).get("data", []) if getattr(r_list, "ok", False) else []
 
-    requested = _normalize_lang_wa(preferred_lang or os.getenv("WHATSAPP_TEMPLATE_LANG", "en"))
-    primary = _primary_lang_wa(requested)
+    requested = _normalize_lang(preferred_lang or os.getenv("WHATSAPP_TEMPLATE_LANG", "en"))
+    primary = _primary_lang(requested)
 
     locales = []
     for t in items:
         if (t.get("name") or "") == name:
-            locales.append({"language": _normalize_lang_wa(t.get("language") or ""), "status": (t.get("status") or "").upper()})
+            locales.append({"language": _normalize_lang(t.get("language") or ""), "status": (t.get("status") or "").upper()})
 
     used_lang = requested
     exact = next((x for x in locales if x["language"] == requested and x["status"] == "APPROVED"), None)
     if not exact:
-        same_primary = next((x for x in locales if _primary_lang_wa(x["language"]) == primary and x["status"] == "APPROVED"), None)
+        same_primary = next((x for x in locales if _primary_lang(x["language"]) == primary and x["status"] == "APPROVED"), None)
         any_appr = next((x for x in locales if x["status"] == "APPROVED"), None)
         used_lang = (same_primary or any_appr or {"language": requested})["language"]
 
+    # Re-compute BODY param count for chosen locale
     body_param_count = 0
     try:
         for t in items:
-            if (t.get("name") == name) and (_normalize_lang_wa(t.get("language") or "") == used_lang):
+            if (t.get("name") == name) and (_normalize_lang(t.get("language") or "") == used_lang):
                 comps = t.get("components") or []
                 body = next((c for c in comps if (c.get("type") or "").upper() == "BODY"), {})
                 params_list = body.get("parameters") or body.get("example", {}).get("body_text") or []
@@ -2447,7 +2436,7 @@ def _send_whatsapp_with_window(flow, step, lead, run, caps, profile) -> bool:
         _append_chat_message(user_email, lead_id, shown)
     return True
 
-# ---------- Engine ----------
+# ---------- Engine bits used below ----------
 def _get_run(state: Dict[str, Any], flow_id: str, lead_key: str) -> Dict[str, Any]:
     return state.setdefault(flow_id, {}).setdefault(lead_key, {
         "step": 0,
@@ -2487,7 +2476,7 @@ def _can_send(run: Dict[str, Any], channel: str, per_hours: int) -> bool:
         last_dt = datetime.datetime.fromisoformat(last)
     except Exception:
         return True
-    return (_now_utc() - last_dt) >= timedelta(hours=per_hours)
+    return (_now_utc() - last_dt) >= _td(hours=per_hours)
 
 def _mark_sent(run: Dict[str, Any], channel: str):
     run.setdefault("last_sent", {})[channel] = _now_utc().isoformat()
@@ -2497,7 +2486,7 @@ def _execute_step(flow: Dict[str, Any], step: Dict[str, Any], lead: Dict[str, An
 
     if kind == "wait":
         last = _dt(run.get("last_step_at")) or _dt(run.get("created_at")) or _now_utc()
-        delta = timedelta(days=step.get("days", 0), hours=step.get("hours", 0), minutes=step.get("minutes", 0))
+        delta = _td(days=step.get("days", 0), hours=step.get("hours", 0), minutes=step.get("minutes", 0))
         return _now_utc() - last >= delta
 
     if kind == "if_no_reply":
@@ -2629,10 +2618,12 @@ automations_bp = Blueprint("automations", __name__)
 def _bf_ensure_files():
     _ensure_files2()
 
+# Health check (handy for debugging)
 @automations_bp.route("/health", methods=["GET"])
 def automations_health():
     return jsonify({"ok": True, "message": "automations alive"})
 
+# User profile
 @automations_bp.route("/user/profile", methods=["GET"])
 def get_user_profile():
     user = _user_from_request()
@@ -2684,6 +2675,7 @@ def set_user_profile():
     _save_user_profile(user, prof)
     return jsonify({"ok": True, "profile": prof})
 
+# Built-in templates (used by GET /templates and preview fallback)
 def _builtin_templates() -> List[Dict[str, Any]]:
     return [
         {
@@ -2737,22 +2729,26 @@ def _builtin_templates() -> List[Dict[str, Any]]:
         }
     ]
 
+# GET /api/automations/templates
 @automations_bp.route("/templates", methods=["GET"])
 def automations_templates():
     return jsonify({"templates": _builtin_templates()})
 
+# OPTIONAL: List approved WA templates for UI picker
 @automations_bp.route("/wa/templates", methods=["GET"])
-def list_wa_templates_automations():
-    waba_id = _resolve_waba_id_wa()
-    r = _fetch_templates_for_waba_wa(waba_id)
+def list_wa_templates():
+    waba_id = _resolve_waba_id()
+    r = _fetch_templates_for_waba(waba_id)
     if not getattr(r, "ok", False):
         return jsonify({"ok": False, "templates": [], "error": "unavailable"}), 503
     data = r.json() or {}
     items = data.get("data", []) or []
+    # only approved, sorted by name
     approved = [t for t in items if (t.get("status") or "").upper() == "APPROVED"]
     approved.sort(key=lambda x: f"{x.get('name','')}-{x.get('language','')}".lower())
     return jsonify({"ok": True, "templates": approved})
 
+# Flows CRUD
 @automations_bp.route("/", methods=["GET"])
 def list_flows():
     user = _user_from_request()
@@ -2813,6 +2809,7 @@ def delete_flow(flow_id):
         _save_state(state)
     return jsonify({"ok": True})
 
+# --- Preview + Execute (authoritative endpoint) ---
 @automations_bp.route("/test", methods=["POST"])
 def automations_test():
     """
@@ -2849,6 +2846,7 @@ def automations_test():
     if isinstance(data.get("profile"), dict):
         profile = {**profile, **data["profile"]}
 
+    # Helpers
     def _first_name_from_email(email: str) -> str:
         if not email:
             return ""
@@ -2869,6 +2867,7 @@ def automations_test():
             parts.append("<p>" + esc + "</p>")
         return "".join(parts)
 
+    # ---------- DRY-RUN ----------
     if mode == "dryrun":
         def _subst(s: str) -> str:
             s = s or ""
@@ -2932,7 +2931,7 @@ def automations_test():
                 would.append({"type": t or "unknown"})
         return jsonify(ok=True, profile=profile, would=would)
 
-    # EXECUTE NOW
+    # ---------- EXECUTE NOW ----------
     leads_by_user = load_leads()
     lead = None
     for ld in (leads_by_user.get(user, []) or []):
@@ -3158,13 +3157,15 @@ def automations_test():
     did = run.get("_collector", [])
     return jsonify(ok=True, did=did)
 
-# Mount the blueprint under /api/automations (guard against double-register)
+# ---------- Blueprint registration (fixes 404 at /api/automations/templates) ----------
+# Mount the blueprint under /api/automations ONLY once.
 if "automations" not in app.blueprints:
     app.register_blueprint(automations_bp, url_prefix="/api/automations")
 
-# ---------------------------------------------------
+
+# ----------------------------
 # Leads CRUD + status coloring
-# ---------------------------------------------------
+# ----------------------------
 @app.route('/api/leads/<user_email>', methods=['GET'])
 def get_leads(user_email):
     leads_by_user = load_leads()
@@ -3196,12 +3197,13 @@ def get_leads(user_email):
 
 @app.route('/api/leads/<user_email>', methods=['POST'])
 def save_user_leads(user_email):
-    data = request.json or {}
+    data = request.json
     leads = data.get("leads", [])
     if not isinstance(leads, list):
         return jsonify({"error": "Leads must be a list"}), 400
     now = datetime.datetime.utcnow().isoformat() + "Z"
     leads_by_user = load_leads()
+    # ensure last_contacted
     for lead in leads:
         if not lead.get("last_contacted"):
             lead["last_contacted"] = lead.get("createdAt") or now
@@ -3224,9 +3226,9 @@ def mark_lead_contacted(user_email, lead_id):
     else:
         return jsonify({"error": "Lead not found."}), 404
 
-# ---------------------------------------------------
+# ----------------------------
 # Notifications API
-# ---------------------------------------------------
+# ----------------------------
 @app.route('/api/notifications/<user_email>', methods=['GET'])
 def get_notifications(user_email):
     notes = load_notifications().get(user_email, [])
@@ -3245,18 +3247,16 @@ def mark_notification_read(user_email, idx):
     save_notifications(all_notes)
     return ('', 204)
 
-# ---------------------------------------------------
+# ----------------------------
 # VAPID Push
-# ---------------------------------------------------
-SUBSCRIPTIONS = {}
-
+# ----------------------------
 @app.route('/api/vapid-public-key', methods=['GET'])
 def get_vapid_key():
     return jsonify({'publicKey': VAPID_PUBLIC_KEY})
 
 @app.route('/api/save-subscription', methods=['POST'])
 def save_subscription():
-    data = request.json or {}
+    data = request.json
     email = data.get('email')
     subscription = data.get('subscription')
     if not email or not subscription:
@@ -3264,26 +3264,319 @@ def save_subscription():
     SUBSCRIPTIONS[email] = subscription
     return jsonify({'message': 'Subscription saved'}), 200
 
-# ---------------------------------------------------
-# Scheduler (periodic jobs)
-# ---------------------------------------------------
-try:
-    scheduler = APScheduler()
-    scheduler.init_app(app)
-    # hourly lead reminder scan
-    scheduler.add_job(func=check_for_lead_reminders, trigger='interval', minutes=60, id='lead_reminders', replace_existing=True)
-    # daily birthday emails (9am UTC)
-    scheduler.add_job(func=send_birthday_greetings, trigger='cron', hour=9, id='bday_greetings', replace_existing=True)
-    # daily trial notice (10am UTC)
-    scheduler.add_job(func=send_trial_ending_soon, trigger='cron', hour=10, id='trial_endings', replace_existing=True)
-    scheduler.start()
-    app.logger.info("[Scheduler] started")
-except Exception as e:
-    app.logger.warning("[Scheduler] not started: %s", e)
+# ----------------------------
+# AI helpers (reply drafts)
+# ----------------------------
+# --- Send the AI prompt using a SendGrid TEMPLATE (frontend: POST /api/send-ai-message)
+@app.route('/api/send-ai-message', methods=['POST'])
+def send_ai_message():
+    try:
+        body = request.get_json(force=True) or {}
+    except Exception:
+        return jsonify({"error": "Invalid JSON payload"}), 400
 
-# ---------------------------------------------------
-# Entrypoint
-# ---------------------------------------------------
+    lead_email    = (body.get("leadEmail") or "").strip()
+    user_email    = (body.get("userEmail") or "").strip()
+    subject       = (body.get("subject") or "").strip() or "Message from RetainAI"
+    message       = (body.get("message") or "").strip()
+    prompt_type   = (body.get("promptType") or "followup").strip().lower()
+
+    lead_name     = (body.get("leadName") or "").strip()
+    user_name     = (body.get("userName") or "").strip()
+    business_name = (body.get("businessName") or "").strip()
+
+    if not lead_email or not message:
+        return jsonify({"error": "leadEmail and message are required"}), 400
+
+    # Choose the SendGrid dynamic template based on the prompt type
+    template_id = PROMPT_TYPE_TO_TEMPLATE.get(prompt_type) or PROMPT_TYPE_TO_TEMPLATE.get("followup")
+    if not template_id:
+        return jsonify({"error": "No template configured for this promptType"}), 500
+
+    # Provide rich dynamic data (templates can pick what they need; extras are ignored)
+    first_name = (lead_name.split(" ", 1)[0] if lead_name else "")
+    dynamic = {
+        # common fields
+        "subject": subject,
+        "lead_name": lead_name,
+        "lead_first_name": first_name,
+        "user_name": user_name,
+        "business_name": business_name,
+        # message body (multiple keys to match various template variable names)
+        "message": message,
+        "message_body": message,
+        "body": message,
+        # nice-to-haves if your template uses them
+        "year": datetime.datetime.now().year,
+        "prompt_type": prompt_type,
+    }
+
+    accepted = send_email_with_template(
+        to_email=lead_email,
+        template_id=template_id,
+        dynamic_data=dynamic,
+        subject=subject,
+        from_email=SENDER_EMAIL,
+        reply_to_email=user_email or None
+    )
+
+    # SendGrid returns HTTP 202 to indicate the message was enqueued successfully.
+    if not accepted:
+        return jsonify({"ok": False, "template_id": template_id, "accepted": False}), 502
+
+    return jsonify({"ok": True, "template_id": template_id, "accepted": True}), 200
+    
+@app.route('/api/generate-message', methods=['POST'])
+def generate_message():
+    data = request.json
+    lead = data.get("lead", {})
+    last_message = data.get("last_message", "")
+    user_business = data.get("user_business", "business")
+    lead_name = lead.get('name', '')
+    user_name = data.get("user_name", "")
+    prompt = (
+        f"You are a professional, emotionally intelligent assistant for a {user_business} business. "
+        f"Given the context below, write ONLY a direct, warm, natural message that could be sent in chat or email, with no greeting lines, subjects, or sign-offs. Only output the message body.\n\n"
+        f"Lead Name: {lead_name}\n"
+        f"Tags: {', '.join(lead.get('tags', []))}\n"
+        f"Notes: {lead.get('notes', '-')}\n"
+        f"Most recent message from the lead: \"{last_message}\"\n"
+        "Your reply should be concise, helpful, and conversational. Do NOT include subject lines, greetings, or closings. Reply as if you were the business owner responding to the client."
+    )
+    try:
+        resp = pyrequests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": "openai/gpt-4o",
+                "messages": [
+                    {"role": "system", "content": "You are a CRM messaging assistant. Output only the message body."},
+                    {"role": "user", "content": prompt}
+                ],
+                "max_tokens": 200,
+                "temperature": 0.7
+            },
+            timeout=30
+        )
+        result = resp.json()
+        if "choices" in result and result["choices"]:
+            reply = result["choices"][0]["message"]["content"].strip()
+            return jsonify({"reply": reply}), 200
+        return jsonify({"error": result.get("error", {}).get("message", "AI response was incomplete.")}), 500
+    except Exception as ex:
+        print("AI Request Error:", str(ex))
+        return jsonify({"error": "Failed to get AI response"}), 500
+
+@app.route('/api/generate_prompt', methods=['POST'])
+def generate_prompt():
+    data = request.get_json(force=True) or {}
+
+    # Identify user -> pull stored brand
+    user_email = (data.get("userEmail") or data.get("user_email") or "").strip().lower()
+    try:
+        users = load_users()
+    except Exception:
+        users = {}
+
+    rec = users.get(user_email, {}) if user_email else {}
+
+    # True brand first; payload as fallback
+    business_name = (
+        (rec.get("business") or "").strip()
+        or (data.get("business") or "").strip()
+        or (data.get("businessName") or "").strip()
+        or (data.get("lineOfBusiness") or "").strip()
+        or "Your Business"
+    )
+    # Keep type only for replacement/guard; don't use it in wording
+    business_type = (rec.get("businessType") or data.get("businessType") or "").strip()
+
+    user_name   = (rec.get("name") or data.get("name") or data.get("userName")
+                   or (user_email.split("@")[0].title() if user_email else "Your Team"))
+    lead_name   = (data.get("leadName") or "").strip()
+    tags        = (data.get("tags") or "").strip()
+    notes       = (data.get("notes") or "").strip()
+    prompt_type = (data.get("promptType") or "").strip()
+    instruction = (data.get("instruction") or "").strip()
+
+    # Prompt that insists on the brand name
+    sys_msg = "Output only the message body. No subjects, greetings, or signatures."
+    user_msg = (
+        f"You write concise, friendly CRM messages on behalf of the business named '{business_name}'. "
+        f"Never refer to the business generically (e.g., 'the {business_type or 'business'}'); "
+        f"always use the exact name '{business_name}'. Keep it under ~80 words.\n\n"
+        f"Recipient: {lead_name}\n"
+        f"Tags: {tags}\n"
+        f"Notes: {notes}\n"
+        f"Prompt Type: {prompt_type}\n"
+        f"Instruction: {instruction}\n"
+        f"Sender Name: {user_name}\n"
+        f"Business Name: {business_name}\n"
+    )
+
+    try:
+        r = pyrequests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": "openai/gpt-4o",
+                "messages": [
+                    {"role": "system", "content": sys_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                "max_tokens": 220,
+                "temperature": 0.7,
+            },
+            timeout=30
+        )
+        j = r.json() if r.ok else {}
+        txt = (j.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+        txt = txt.strip()
+        if not txt:
+            return jsonify({"error": j.get("error", {}).get("message", "AI response was incomplete.")}), 500
+
+        # Strip any "Subject:" lines that leak in
+        import re
+        txt = re.sub(r'(?im)^\s*subject\s*:\s*.*$', '', txt).strip().strip('"').strip("'")
+
+        # FORCE brand over type everywhere (handles 'fromnail salon', 'the nail salon', 'nail salons', etc.)
+        if business_type:
+            bt = re.escape(business_type)
+            bn = business_name
+
+            # 1) 'from' with optional/missing space
+            txt = re.sub(rf'(?i)\bfrom\s*{bt}s?\b', f'from {bn}', txt)
+            # 2) determiners + type
+            txt = re.sub(rf'(?i)\b(?:the|our|your|this|that)\s*{bt}s?\b', bn, txt)
+            # 3) plain type anywhere (singular/plural)
+            txt = re.sub(rf'(?i)\b{bt}s?\b', bn, txt)
+
+            # tidy spaces
+            txt = re.sub(r'\s{2,}', ' ', txt).strip()
+
+        return jsonify({"prompt": txt}), 200
+
+    except Exception as ex:
+        print("AI Request Error:", str(ex))
+        return jsonify({"error": "Failed to get AI response"}), 500
+
+
+
+# ----------------------------
+# User info & Push
+# ----------------------------
+@app.route('/api/user/<path:email>', methods=['GET'])
+def get_user(email):
+    users = load_users()
+    user = users.get(email)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    out = {
+      "email":        email,
+      "name":         user.get("name",""),
+      "logo":         user.get("picture",""),
+      "businessType": user.get("businessType",""),
+      "business":     user.get("business",""),
+      "people":       user.get("people",""),
+      "location":     user.get("location",""),
+      "stripe_account_id":  user.get("stripe_account_id"),
+      "stripe_connected":   user.get("stripe_connected", False),
+      "whatsapp":           user.get("whatsapp","")
+    }
+    return jsonify(out), 200
+
+@app.route('/api/push/notify', methods=['POST'])
+def push_notify():
+    data = request.json
+    lead_email   = data.get('lead_email')
+    notification = data.get('notification', {})
+    sub = SUBSCRIPTIONS.get(lead_email)
+    if not sub:
+        return jsonify({'error': 'No subscription for that lead'}), 404
+    # NOTE: pywebpush import intentionally removed in this cleaned build to keep deps light.
+    return jsonify({'error': 'Push disabled in this build'}), 501
+
+# ----------------------------
+# Home
+# ----------------------------
+@app.route("/")
+def home():
+    return jsonify({"status": "RetainAI backend running."})
+
+# ----------------------------
+# Scheduler (works on gunicorn + local)
+# ----------------------------
+def start_scheduler_once():
+    """Start APScheduler once per process; safe under Gunicorn/Render."""
+    if getattr(app, "_scheduler_started", False):
+        return
+    if os.getenv("DISABLE_SCHEDULER") == "1":
+        print("[SCHEDULER] disabled via DISABLE_SCHEDULER=1")
+        app._scheduler_started = True
+        return
+
+    try:
+        scheduler = APScheduler()
+        scheduler.init_app(app)
+        scheduler.start()
+
+        # Add jobs defensively so missing functions don't crash boot
+        try:
+            scheduler.add_job(
+                id="lead_reminder_job",
+                func=check_for_lead_reminders,
+                trigger="interval",
+                minutes=1,
+                replace_existing=True,
+            )
+        except Exception as e:
+            print("[SCHEDULER] lead_reminder_job not scheduled:", e)
+
+        try:
+            scheduler.add_job(
+                id="birthday_greetings_job",
+                func=send_birthday_greetings,
+                trigger="cron",
+                hour=8,
+                replace_existing=True,
+            )
+        except Exception as e:
+            print("[SCHEDULER] birthday_greetings_job not scheduled:", e)
+
+        try:
+            scheduler.add_job(
+                id="trial_ending_soon_job",
+                func=send_trial_ending_soon,
+                trigger="cron",
+                hour=9,
+                replace_existing=True,
+            )
+        except Exception as e:
+            print("[SCHEDULER] trial_ending_soon_job not scheduled:", e)
+
+        print("[SCHEDULER] jobs:", scheduler.get_jobs())
+        app._scheduler_started = True
+    except Exception as e:
+        print("[SCHEDULER] failed to start:", e)
+        app._scheduler_started = True  # prevent retry loop if something is fundamentally broken
+
+# Start the scheduler when the first request hits (safe under gunicorn)
+@app.before_first_request
+def _kick_scheduler():
+    start_scheduler_once()
+
+# ----------------------------
+# Local dev runner ONLY
+# ----------------------------
 if __name__ == "__main__":
+    # local dev server; Render/gunicorn will NOT run this block
+    debug = os.getenv("FLASK_ENV") != "production"
     port = int(os.getenv("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port)
+    host = os.getenv("HOST", "0.0.0.0")
+    # Kick scheduler in dev so jobs run without needing a request
+    start_scheduler_once()
+    app.run(host=host, port=port, debug=debug, threaded=True)
+
