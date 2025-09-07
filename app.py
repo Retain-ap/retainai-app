@@ -1,30 +1,31 @@
-# app.py (updated)
-# Notes:
-# - Fixed storage path shadowing (use DATA_ROOT only)
-# - Fixed SendGrid key usage (no VAPID_PRIVATE_KEY confusion)
-# - Proper URL-encoding for Google Calendar links
-# - ICS timestamps are UTC-correct
-# - Stripe connect flag set only AFTER onboarding
-# - Stripe disconnect reads user_email from JSON or query
-# - Avoid WhatsApp helper name collisions with Automations (suffix _a_)
-# - CORS configured for cookies; simple signed session cookie added
+# app.py — header / bootstrap (hardened for Render)
+# - Dotenv only in non-prod
+# - ALLOWED_ORIGINS/FRONTEND_ORIGINS merged & normalized
+# - /healthz (for Render) + /api/health
+# - Session cookie defaults safe for cross-site
+# - DATA_ROOT primary (DATA_DIR fallback)
+# - Clear logging on blueprint registration
 
 import os, json, re, hmac, hashlib, base64, datetime, urllib.parse, time, threading, uuid, zlib, random
 from uuid import uuid4
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, quote_plus
-from app_imports import FRONTEND_BASE
 
 from flask import Flask, request, jsonify, send_from_directory, redirect, Blueprint, make_response
 from flask_cors import CORS
-from dotenv import load_dotenv
+
+# Only load dotenv locally to avoid prod parse errors
+if os.getenv("FLASK_ENV") != "production":
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except Exception:
+        pass
 
 import stripe
 import requests as pyrequests
-
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail, Email
-
 from flask_apscheduler import APScheduler
 from google.oauth2 import id_token
 from google.auth.transport import requests as grequests
@@ -32,24 +33,25 @@ from google.auth.transport import requests as grequests
 print(f"[BOOT] RetainAI started (PID: {os.getpid()})")
 
 # ---------------------------------------------------
-# Env & app setup
+# Flask app & CORS
 # ---------------------------------------------------
-load_dotenv()
-
 class Config:
     SCHEDULER_API_ENABLED = True
 
 app = Flask(__name__)
 app.config.from_object(Config())
 
-# Allowed origins from env, normalized (no trailing slash)
+# Merge/normalize allowed origins
+_raw_origins = (
+    os.getenv("ALLOWED_ORIGINS")
+    or os.getenv("FRONTEND_ORIGINS")          # legacy env name we used earlier
+    or "http://localhost:3000"
+)
 ALLOWED_ORIGINS = [
-    o.strip().rstrip("/")
-    for o in os.getenv("ALLOWED_ORIGINS", "https://app.retainai.ca,http://localhost:3000").split(",")
-    if o.strip()
+    o.strip().rstrip("/") for o in _raw_origins.split(",") if o and o.strip()
 ]
 
-# SINGLE Flask-CORS init (no other CORS(app, ...) calls anywhere)
+# SINGLE Flask-CORS init
 CORS(
     app,
     supports_credentials=True,
@@ -62,7 +64,16 @@ CORS(
     },
 )
 
-# SINGLE after_request (remove any others)
+# Health endpoints (Render default + API)
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}, 200
+
+@app.get("/api/health")
+def api_health():
+    return {"status": "ok"}, 200
+
+# SINGLE after_request to reflect request Origin for creds
 @app.after_request
 def add_cors_headers(resp):
     origin = (request.headers.get("Origin") or "").rstrip("/")
@@ -76,11 +87,21 @@ def add_cors_headers(resp):
         resp.headers.pop("Access-Control-Allow-Origin", None)
     return resp
 
-# Simple cookie signing for a lightweight session (email + timestamp)
-APP_SECRET = os.getenv("APP_SECRET") or os.getenv("META_APP_SECRET") or os.getenv("SECRET_KEY") or "dev-secret"
+# ---------------------------------------------------
+# Lightweight signed session cookie
+# ---------------------------------------------------
+APP_SECRET = (
+    os.getenv("APP_SECRET")
+    or os.getenv("META_APP_SECRET")
+    or os.getenv("SECRET_KEY")
+    or "dev-secret"
+)
 SESSION_COOKIE_NAME = os.getenv("SESSION_COOKIE_NAME", "retain_session")
-SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").lower() == "true"
-SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")
+
+# If frontend & backend are on different domains, SameSite=None + Secure=True are required
+_prod = os.getenv("FLASK_ENV") == "production"
+SESSION_COOKIE_SECURE = (os.getenv("SESSION_COOKIE_SECURE", "true" if _prod else "false").lower() == "true")
+SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "None" if _prod else "Lax")
 
 def _sign_session(email: str) -> str:
     ts = str(int(time.time()))
@@ -106,17 +127,19 @@ def _set_session_cookie(resp, email: str):
         httponly=True,
         secure=SESSION_COOKIE_SECURE,
         samesite=SESSION_COOKIE_SAMESITE,
-        max_age=60 * 60 * 24 * 14  # 14 days
+        max_age=60 * 60 * 24 * 14,  # 14 days
     )
 
 # ---------------------------------------------------
-# Persistent storage root & file layout (DATA_ROOT only)
+# Persistent storage root & file layout
 # ---------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
-DATA_ROOT = os.getenv("DATA_DIR", os.path.join(BASE_DIR, "data"))  # Render disk in prod
+
+# Primary: DATA_ROOT (Render: set to /data). Fallback to DATA_DIR for backward compat.
+DATA_ROOT = os.getenv("DATA_ROOT") or os.getenv("DATA_DIR") or os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_ROOT, exist_ok=True)
 
-# Store JSON/state files in DATA_ROOT (authoritative)
+# JSON/state files in DATA_ROOT
 LEADS_FILE         = os.path.join(DATA_ROOT, "leads.json")
 USERS_FILE         = os.path.join(DATA_ROOT, "users.json")
 NOTIFICATIONS_FILE = os.path.join(DATA_ROOT, "notifications.json")
@@ -124,7 +147,7 @@ APPOINTMENTS_FILE  = os.path.join(DATA_ROOT, "appointments.json")
 CHAT_FILE          = os.path.join(DATA_ROOT, "whatsapp_chats.json")
 STATUS_FILE        = os.path.join(DATA_ROOT, "whatsapp_status.json")
 
-# ICS files (calendar attachments) — also on disk
+# ICS files directory
 ICS_DIR = os.path.join(DATA_ROOT, "ics_files")
 os.makedirs(ICS_DIR, exist_ok=True)
 
@@ -139,7 +162,7 @@ CHANNEL_EMAIL = "email"
 CHANNEL_WHATSAPP = "whatsapp"
 
 # ---------------------------------------------------
-# Third-party keys
+# Third-party & integration keys
 # ---------------------------------------------------
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 SENDGRID_API_KEY   = os.getenv("SENDGRID_API_KEY")
@@ -165,37 +188,38 @@ GOOGLE_SCOPES = [
 ]
 
 # WhatsApp Cloud API
-WHATSAPP_TOKEN         = os.getenv("WHATSAPP_TOKEN") or os.getenv("WHATSAPP_ACCESS_TOKEN")
-WHATSAPP_PHONE_ID      = os.getenv("WHATSAPP_PHONE_ID") or os.getenv("WHATSAPP_PHONE_NUMBER_ID")
-WHATSAPP_VERIFY_TOKEN  = os.getenv("WHATSAPP_VERIFY_TOKEN", "retainai-verify")
-WHATSAPP_WABA_ID       = os.getenv("WHATSAPP_WABA_ID") or os.getenv("WHATSAPP_BUSINESS_ID")
+WHATSAPP_TOKEN            = os.getenv("WHATSAPP_TOKEN") or os.getenv("WHATSAPP_ACCESS_TOKEN")
+WHATSAPP_PHONE_ID         = os.getenv("WHATSAPP_PHONE_ID") or os.getenv("WHATSAPP_PHONE_NUMBER_ID")
+WHATSAPP_VERIFY_TOKEN     = os.getenv("WHATSAPP_VERIFY_TOKEN", "retainai-verify")
+WHATSAPP_WABA_ID          = os.getenv("WHATSAPP_WABA_ID") or os.getenv("WHATSAPP_BUSINESS_ID")
 WHATSAPP_TEMPLATE_DEFAULT = os.getenv("WHATSAPP_TEMPLATE_DEFAULT", "retainai_outreach")
 WHATSAPP_TEMPLATE_LANG    = os.getenv("WHATSAPP_TEMPLATE_LANG", "en_US")
 DEFAULT_COUNTRY_CODE      = (os.getenv("DEFAULT_COUNTRY_CODE") or "1").strip()
 
-# Pricing helpers
-ZERO_DECIMAL = {"bif","clp","djf","gnf","jpy","kmf","krw","mga","pyg","rwf","ugx","vnd","vuv","xaf","xof","xpf"}
-
 # ---------------------------------------------------
-# Blueprints from other modules (if present in your repo)
+# Blueprints (with logging)
 # ---------------------------------------------------
 try:
     from app_imports import imports_bp
-    app.register_blueprint(imports_bp)
-except Exception:
-    pass
+    app.register_blueprint(imports_bp, url_prefix="/api")
+    print("[BOOT] imports_bp registered at /api")
+except Exception as e:
+    print(f"[BOOT] imports_bp not registered: {e}")
 
 try:
     from app_team import team_bp
-    app.register_blueprint(team_bp)
-except Exception:
-    pass
+    app.register_blueprint(team_bp, url_prefix="/api")
+    print("[BOOT] team_bp registered at /api")
+except Exception as e:
+    print(f"[BOOT] team_bp not registered: {e}")
 
 try:
     from app_wa_auto_appointments import WA_AUTO_BP
-    app.register_blueprint(WA_AUTO_BP)
-except Exception:
-    pass
+    app.register_blueprint(WA_AUTO_BP, url_prefix="/api")
+    print("[BOOT] WA_AUTO_BP registered at /api")
+except Exception as e:
+    print(f"[BOOT] WA_AUTO_BP not registered: {e}")
+
 
 # ----------------------------
 # Helpers: JSON storage
