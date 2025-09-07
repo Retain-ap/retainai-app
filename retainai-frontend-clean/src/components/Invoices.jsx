@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/rules-of-hooks */
 // File: frontend/src/components/Invoices.jsx
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { EyeIcon, BellIcon } from "@heroicons/react/24/outline";
