@@ -3564,9 +3564,11 @@ def start_scheduler_once():
         app._scheduler_started = True  # prevent retry loop if something is fundamentally broken
 
 # Start the scheduler when the first request hits (safe under gunicorn)
-@app.before_first_request
+# Start the scheduler lazily on the first real request (Flask 3 safe)
+@app.before_request
 def _kick_scheduler():
-    start_scheduler_once()
+    if not getattr(app, "_scheduler_started", False):
+        start_scheduler_once()
 
 # ----------------------------
 # Local dev runner ONLY
