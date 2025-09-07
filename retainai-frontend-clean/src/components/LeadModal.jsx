@@ -1,153 +1,212 @@
 // src/components/LeadModal.jsx
-
-import React, { useState, useRef } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Tags from "./Tags";
 import { QRCodeSVG } from "qrcode.react";
 
+/**
+ * LeadModal
+ * - Create / edit a lead
+ * - Timeline updates (notes + voice notes)
+ * - Phone helpers: tel: link, WhatsApp link, QR to call
+ * - Esc to close, backdrop click, body-scroll lock, a11y labels
+ * - Defensive validation + duplicate-tag prevention
+ */
+
+/* ----------------------- utils ----------------------- */
 function migrateNotesToUpdates(lead) {
   if (lead?.updates && Array.isArray(lead.updates)) return lead.updates;
   if (lead?.notes) {
-    return [{
-      type: "note",
-      text: lead.notes,
-      date: lead.createdAt || new Date().toISOString(),
-      author: "user",
-    }];
+    return [
+      {
+        type: "note",
+        text: lead.notes,
+        date: lead.createdAt || new Date().toISOString(),
+        author: "user",
+      },
+    ];
   }
   return [];
 }
 
-function VoiceRecorder({ onSave }) {
+function uniqTags(arr = []) {
+  const out = [];
+  const seen = new Set();
+  arr.forEach((t) => {
+    const k = String(t || "").trim();
+    if (k && !seen.has(k.toLowerCase())) {
+      seen.add(k.toLowerCase());
+      out.push(k);
+    }
+  });
+  return out;
+}
+
+function emailLooksOk(email) {
+  if (!email) return false;
+  // not overly strict; just prevent obvious typos
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(email).trim());
+}
+
+function normalizeE164ish(phone = "") {
+  // keep "+" if present, strip formatting
+  const s = String(phone).trim();
+  if (!s) return "";
+  return s[0] === "+"
+    ? s.replace(/[^\d+]/g, "")
+    : s.replace(/[^\d]/g, "");
+}
+
+function waLinkFromPhone(phone = "") {
+  const n = normalizeE164ish(phone);
+  return n ? `https://wa.me/${n.replace("+", "")}` : "";
+}
+
+/* -------------------- Voice Recorder -------------------- */
+function VoiceRecorder({ onSave, onError, disabled }) {
   const [recording, setRecording] = useState(false);
   const [audioUrl, setAudioUrl] = useState(null);
   const [transcript, setTranscript] = useState("");
-  const [mediaRecorder, setMediaRecorder] = useState(null);
-  const chunks = useRef([]);
+  const mediaRecorderRef = useRef(null);
+  const chunksRef = useRef([]);
+  const streamRef = useRef(null);
 
-  const handleStart = async () => {
-    setTranscript("");
-    if (!navigator.mediaDevices) {
-      alert("Mic not supported in this browser.");
-      return;
-    }
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mr = new window.MediaRecorder(stream);
-    mr.ondataavailable = e => chunks.current.push(e.data);
-    mr.onstop = () => {
-      const blob = new Blob(chunks.current, { type: "audio/webm" });
-      const url = URL.createObjectURL(blob);
-      setAudioUrl(url);
-      setTranscript("Voice note transcribed (demo).");
-      onSave(blob, url, "Voice note transcribed (demo).");
-      chunks.current = [];
+  useEffect(() => {
+    return () => {
+      // cleanup tracks if unmounted while recording
+      try {
+        mediaRecorderRef.current?.stop();
+      } catch {}
+      try {
+        streamRef.current?.getTracks?.().forEach((t) => t.stop());
+      } catch {}
     };
-    setMediaRecorder(mr);
-    mr.start();
-    setRecording(true);
+  }, []);
+
+  const start = async () => {
+    if (disabled) return;
+    setTranscript("");
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw new Error("Microphone is not supported in this browser.");
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const mr = new window.MediaRecorder(stream);
+      mediaRecorderRef.current = mr;
+
+      mr.ondataavailable = (e) => {
+        if (e?.data) chunksRef.current.push(e.data);
+      };
+      mr.onstop = () => {
+        try {
+          const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+          const url = URL.createObjectURL(blob);
+          setAudioUrl(url);
+          // Placeholder transcript – integrate your STT backend if available
+          const fakeTranscript = "Voice note transcribed (demo).";
+          setTranscript(fakeTranscript);
+          onSave?.(blob, url, fakeTranscript);
+        } finally {
+          chunksRef.current = [];
+          // always stop tracks
+          try {
+            streamRef.current?.getTracks?.().forEach((t) => t.stop());
+          } catch {}
+          streamRef.current = null;
+        }
+      };
+
+      mr.start();
+      setRecording(true);
+    } catch (e) {
+      onError?.(e?.message || "Could not access microphone.");
+    }
   };
 
-  const handleStop = () => {
-    if (mediaRecorder) {
-      mediaRecorder.stop();
+  const stop = () => {
+    try {
+      mediaRecorderRef.current?.stop();
+    } finally {
       setRecording(false);
     }
   };
 
   return (
     <div style={{ margin: "12px 0" }}>
-      <div>
-        {!recording && (
-          <button
-            type="button"
-            style={{
-              background: "#232323",
-              color: "#fff",
-              border: "1.2px solid #313336",
-              borderRadius: 7,
-              padding: "9px 23px",
-              fontWeight: 700,
-              marginRight: 14,
-              cursor: "pointer",
-            }}
-            onClick={handleStart}
-          >
-            🎤 Start Recording
-          </button>
-        )}
-        {recording && (
-          <button
-            type="button"
-            style={{
-              background: "#e66565",
-              color: "#fff",
-              border: "none",
-              borderRadius: 7,
-              padding: "9px 23px",
-              fontWeight: 700,
-              marginRight: 14,
-              cursor: "pointer",
-            }}
-            onClick={handleStop}
-          >
-            ⏹ Stop Recording
-          </button>
-        )}
-        {audioUrl && (
-          <audio controls src={audioUrl} style={{ display: "block", marginTop: 9 }} />
-        )}
-        {transcript && (
-          <div style={{
-            color: "#bbb", background: "#232323", borderRadius: 7,
-            padding: "7px 10px", marginTop: 6
-          }}>
-            Transcript: {transcript}
-          </div>
-        )}
-      </div>
+      {!recording ? (
+        <button
+          type="button"
+          onClick={start}
+          disabled={disabled}
+          style={btnSecondary}
+        >
+          🎤 Start Recording
+        </button>
+      ) : (
+        <button type="button" onClick={stop} style={btnDanger}>
+          ⏹ Stop Recording
+        </button>
+      )}
+
+      {audioUrl && (
+        <audio controls src={audioUrl} style={{ display: "block", marginTop: 9, width: "100%" }} />
+      )}
+      {transcript && (
+        <div style={pillNote}>Transcript: {transcript}</div>
+      )}
     </div>
   );
 }
 
+/* ----------------------- main ----------------------- */
 export default function LeadModal({ lead, tags, onClose, onSave }) {
   const [name, setName] = useState(lead?.name || "");
   const [email, setEmail] = useState(lead?.email || "");
   const [phone, setPhone] = useState(lead?.phone || "");
-  const [birthday, setBirthday] = useState(lead?.birthday ? lead.birthday.slice(0, 10) : "");
-  const [leadTags, setLeadTags] = useState(lead?.tags || []);
+  const [birthday, setBirthday] = useState(lead?.birthday ? String(lead.birthday).slice(0, 10) : "");
+  const [leadTags, setLeadTags] = useState(uniqTags(lead?.tags || []));
   const [updates, setUpdates] = useState(migrateNotesToUpdates(lead));
   const [showUpdateModal, setShowUpdateModal] = useState(false);
-  const [newUpdateText, setNewUpdateText] = useState("");
   const [addingVoice, setAddingVoice] = useState(false);
+  const [newUpdateText, setNewUpdateText] = useState("");
   const [voiceData, setVoiceData] = useState({ blob: null, url: null, transcript: "" });
 
-  function handleSave() {
-    onSave({
-      ...(lead || {}),
-      name,
-      email,
-      phone,
-      birthday: birthday || undefined,
-      tags: leadTags,
-      createdAt: lead?.createdAt || new Date().toISOString(),
-      updates,
-      notes: updates.length > 0 ? updates[updates.length - 1].text : "",
-    });
-  }
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
 
-  function handleAddUpdate(type = "note") {
-    if (type === "voice") {
-      setAddingVoice(true);
-      setShowUpdateModal(true);
-      return;
-    }
-    setAddingVoice(false);
+  // body-scroll lock + ESC-close
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e) => {
+      if (e.key === "Escape") onClose?.();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prev;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  // derived
+  const waHref = useMemo(() => waLinkFromPhone(phone), [phone]);
+
+  function openAddUpdate(kind = "note") {
+    setAddingVoice(kind === "voice");
     setShowUpdateModal(true);
+    setNewUpdateText("");
+    setVoiceData({ blob: null, url: null, transcript: "" });
+    setError("");
   }
 
-  function handleSaveUpdate() {
-    let update;
-    if (addingVoice && voiceData.url) {
-      update = {
+  function commitUpdate() {
+    let entry;
+    if (addingVoice) {
+      if (!voiceData?.url) {
+        setError("Record a voice note first.");
+        return;
+      }
+      entry = {
         type: "voice",
         date: new Date().toISOString(),
         author: "user",
@@ -155,128 +214,111 @@ export default function LeadModal({ lead, tags, onClose, onSave }) {
         transcript: voiceData.transcript,
       };
     } else {
-      if (!newUpdateText.trim()) return;
-      update = {
+      const text = (newUpdateText || "").trim();
+      if (!text) {
+        setError("Write something for your update.");
+        return;
+      }
+      entry = {
         type: "note",
-        text: newUpdateText.trim(),
+        text,
         date: new Date().toISOString(),
         author: "user",
       };
     }
-    setUpdates(prev => [...prev, update]);
+    setUpdates((prev) => [...prev, entry]);
     setShowUpdateModal(false);
+    setAddingVoice(false);
     setNewUpdateText("");
     setVoiceData({ blob: null, url: null, transcript: "" });
-    setAddingVoice(false);
+    setError("");
   }
 
-  // --- KEY: Responsive, scrollable modal ---
+  async function handleSubmit(e) {
+    e?.preventDefault?.();
+    setError("");
+
+    if (!name.trim()) return setError("Please enter a name.");
+    if (!emailLooksOk(email)) return setError("Please enter a valid email address.");
+
+    setSaving(true);
+    try {
+      const next = {
+        ...(lead || {}),
+        name: name.trim(),
+        email: email.trim(),
+        phone: phone.trim() || undefined,
+        birthday: birthday || undefined,
+        tags: uniqTags(leadTags),
+        createdAt: lead?.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        updates,
+        // keep legacy `notes` in sync with the latest note-like entry
+        notes: (() => {
+          const last = [...updates].reverse().find((u) => u.type === "note" && u.text);
+          return last?.text || "";
+        })(),
+      };
+      onSave?.(next);
+      onClose?.();
+    } catch (e2) {
+      setError(e2?.message || "Failed to save lead.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <div
-      style={{
-        position: "fixed",
-        left: 0,
-        top: 0,
-        zIndex: 70,
-        width: "100vw",
-        height: "100vh",
-        background: "#191b1eb9",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center"
-      }}
+      role="dialog"
+      aria-modal="true"
+      aria-label={lead ? "Edit lead" : "Add lead"}
+      style={backdrop}
       onClick={onClose}
     >
       {/* Add Update Modal */}
       {showUpdateModal && (
-        <div
-          style={{
-            position: "fixed",
-            left: 0,
-            top: 0,
-            zIndex: 71,
-            width: "100vw",
-            height: "100vh",
-            background: "#232324cc",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center"
-          }}
-          onClick={() => { setShowUpdateModal(false); setNewUpdateText(""); setAddingVoice(false); setVoiceData({}); }}
-        >
-          <div
-            style={{
-              background: "#232324",
-              borderRadius: 13,
-              minWidth: 320,
-              maxWidth: 410,
-              boxShadow: "0 2px 16px #000c",
-              padding: "28px 33px",
-              display: "flex",
-              flexDirection: "column",
-              gap: 13,
-              width: "100%",
-              position: "relative",
-              color: "#eee"
-            }}
-            onClick={e => e.stopPropagation()}
-          >
-            <h3 style={{ margin: "0 0 12px 0", fontWeight: 700 }}>
-              {addingVoice ? "Add Voice Note" : "Add Update"}
-            </h3>
+        <div style={overlay} onClick={() => setShowUpdateModal(false)}>
+          <div style={sheet} onClick={(e) => e.stopPropagation()}>
+            <h3 style={sheetTitle}>{addingVoice ? "Add Voice Note" : "Add Update"}</h3>
+
+            {error && <div style={errorBox}>{error}</div>}
+
             {addingVoice ? (
               <VoiceRecorder
-                onSave={(blob, url, transcript) => {
-                  setVoiceData({ blob, url, transcript });
-                }}
+                disabled={saving}
+                onSave={(blob, url, transcript) => setVoiceData({ blob, url, transcript })}
+                onError={(msg) => setError(msg)}
               />
             ) : (
               <textarea
                 placeholder="Write an update…"
                 value={newUpdateText}
-                onChange={e => setNewUpdateText(e.target.value)}
-                style={{
-                  padding: "10px",
-                  fontSize: "1.07em",
-                  minHeight: 55,
-                  border: "1.2px solid #303236",
-                  borderRadius: 7,
-                  background: "#202124",
-                  color: "#fff",
-                  resize: "vertical",
+                onChange={(e) => setNewUpdateText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    commitUpdate();
+                  }
                 }}
+                style={textarea}
               />
             )}
+
             <div style={{ display: "flex", gap: 12 }}>
-              <button
-                type="button"
-                style={{
-                  background: "#353638",
-                  color: "#fff",
-                  fontWeight: 600,
-                  border: "none",
-                  borderRadius: 7,
-                  padding: "10px 22px",
-                  cursor: "pointer",
-                  fontSize: "1em",
-                }}
-                onClick={handleSaveUpdate}
-              >
+              <button type="button" style={btnPrimary} onClick={commitUpdate}>
                 Save Update
               </button>
               <button
                 type="button"
-                style={{
-                  background: "#29292c",
-                  color: "#aaa",
-                  fontWeight: 600,
-                  border: "none",
-                  borderRadius: 7,
-                  padding: "10px 22px",
-                  cursor: "pointer",
-                  fontSize: "1em",
+                style={btnGhost}
+                onClick={() => {
+                  setShowUpdateModal(false);
+                  setAddingVoice(false);
+                  setNewUpdateText("");
+                  setVoiceData({ blob: null, url: null, transcript: "" });
+                  setError("");
                 }}
-                onClick={() => { setShowUpdateModal(false); setNewUpdateText(""); setAddingVoice(false); setVoiceData({}); }}
               >
                 Cancel
               </button>
@@ -285,149 +327,86 @@ export default function LeadModal({ lead, tags, onClose, onSave }) {
         </div>
       )}
 
-      {/* Main Lead Modal - key: maxHeight, scrollable, always centered */}
+      {/* Main modal */}
       <form
-        style={{
-          background: "#232324",
-          borderRadius: 14,
-          minWidth: 320,
-          maxWidth: 410,
-          boxShadow: "0 8px 40px #000b",
-          margin: "40px 0",
-          width: "100%",
-          display: "flex",
-          flexDirection: "column",
-          color: "#eee",
-          border: "1.5px solid #292929",
-          position: "relative",
-          maxHeight: "calc(100vh - 80px)",
-          overflowY: "auto",
-        }}
-        onClick={e => e.stopPropagation()}
-        onSubmit={e => {
-          e.preventDefault();
-          handleSave();
-        }}
+        style={modal}
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={handleSubmit}
       >
-        {/* Close "X" */}
-        <button
-          type="button"
-          onClick={onClose}
-          style={{
-            position: "absolute",
-            right: 18,
-            top: 16,
-            background: "none",
-            border: "none",
-            fontSize: 23,
-            color: "#aaa",
-            cursor: "pointer",
-            zIndex: 2,
-            fontWeight: 800
-          }}
-          aria-label="Close"
-        >×</button>
+        <button type="button" onClick={onClose} aria-label="Close" style={closeX}>
+          ×
+        </button>
+
         <div style={{ padding: "20px 28px 10px 28px" }}>
-          <h2 style={{
-            margin: "0 0 15px 0",
-            fontWeight: 700,
-            color: "#fff",
-            fontSize: 22,
-            letterSpacing: 0.01,
-            lineHeight: 1.22
-          }}>
-            {lead ? "Edit Lead" : "Add Lead"}
-          </h2>
-          {/* Fields */}
+          <h2 style={title}>{lead ? "Edit Lead" : "Add Lead"}</h2>
+
+          {error && (
+            <div style={errorBox} role="alert" aria-live="polite">
+              {error}
+            </div>
+          )}
+
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <input
               required
               value={name}
               placeholder="Full Name"
-              style={{
-                padding: "10px",
-                fontSize: "1.02em",
-                border: "1.2px solid #313336",
-                borderRadius: 7,
-                background: "#242529",
-                color: "#eee",
-              }}
-              onChange={e => setName(e.target.value)}
+              style={input}
+              onChange={(e) => setName(e.target.value)}
             />
             <input
               required
               type="email"
               value={email}
               placeholder="Email"
-              style={{
-                padding: "10px",
-                fontSize: "1.02em",
-                border: "1.2px solid #313336",
-                borderRadius: 7,
-                background: "#242529",
-                color: "#eee",
-              }}
-              onChange={e => setEmail(e.target.value)}
+              style={input}
+              onChange={(e) => setEmail(e.target.value)}
             />
-            <input
-              type="tel"
-              value={phone}
-              placeholder="Phone Number"
-              style={{
-                padding: "10px",
-                fontSize: "1.02em",
-                border: "1.2px solid #313336",
-                borderRadius: 7,
-                background: "#242529",
-                color: "#eee",
-              }}
-              onChange={e => setPhone(e.target.value)}
-            />
+            <div>
+              <input
+                type="tel"
+                value={phone}
+                placeholder="Phone Number"
+                style={input}
+                onChange={(e) => setPhone(e.target.value)}
+              />
+              {!!phone && (
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  <a href={`tel:${phone}`} style={miniBtnLink}>Call</a>
+                  {waHref && (
+                    <a href={waHref} target="_blank" rel="noreferrer" style={miniBtnLink}>
+                      WhatsApp
+                    </a>
+                  )}
+                </div>
+              )}
+            </div>
             <input
               type="date"
               value={birthday}
-              onChange={e => setBirthday(e.target.value)}
-              style={{
-                padding: "10px",
-                fontSize: "1.02em",
-                border: "1.2px solid #313336",
-                borderRadius: 7,
-                background: "#242529",
-                color: "#eee",
-              }}
+              onChange={(e) => setBirthday(e.target.value)}
+              style={input}
               placeholder="Birthday"
             />
-            {/* Tags */}
-            <Tags
-              tags={tags}
-              selected={leadTags}
-              onChange={setLeadTags}
-              placeholder="Tags..."
-            />
+
+            <Tags tags={tags} selected={leadTags} onChange={(t) => setLeadTags(uniqTags(t))} placeholder="Tags..." />
           </div>
+
           {/* Timeline */}
-          <div style={{
-            margin: "16px 0 0 0",
-            background: "#29292c",
-            borderRadius: 8,
-            padding: "11px 13px",
-            minHeight: 48,
-            maxHeight: 170,
-            overflowY: "auto",
-          }}>
-            <div style={{
-              color: "#bbb",
-              fontWeight: 700,
-              fontSize: 15,
-              marginBottom: 4
-            }}>Timeline</div>
-            {updates.length === 0 && <div style={{ color: "#888", fontStyle: "italic" }}>No updates yet.</div>}
+          <div style={timelineBox}>
+            <div style={timelineHeader}>Timeline</div>
+            {updates.length === 0 && (
+              <div style={{ color: "#888", fontStyle: "italic" }}>No updates yet.</div>
+            )}
             {updates.map((u, i) => (
-              <div key={i} style={{
-                marginBottom: 10,
-                paddingBottom: 7,
-                borderBottom: i !== updates.length - 1 ? "1px solid #232323" : "none"
-              }}>
+              <div
+                key={`${u.type}-${u.date}-${i}`}
+                style={{
+                  marginBottom: 10,
+                  paddingBottom: 7,
+                  borderBottom: i !== updates.length - 1 ? "1px solid #232323" : "none",
+                }}
+              >
                 <div style={{ fontSize: 13, color: "#999", fontWeight: 700 }}>
                   {u.type === "note" && "Note"}
                   {u.type === "voice" && "Voice Note"}
@@ -436,10 +415,10 @@ export default function LeadModal({ lead, tags, onClose, onSave }) {
                     {u.date ? new Date(u.date).toLocaleString() : ""}
                   </span>
                 </div>
-                {u.type === "note" && <div style={{ color: "#eee" }}>{u.text}</div>}
+                {u.type === "note" && <div style={{ color: "#eee", whiteSpace: "pre-wrap" }}>{u.text}</div>}
                 {u.type === "voice" && (
                   <div>
-                    <audio controls src={u.audioUrl} style={{ margin: "7px 0" }} />
+                    <audio controls src={u.audioUrl} style={{ margin: "7px 0", width: "100%" }} />
                     <div style={{ fontSize: 13, color: "#eee" }}>Transcript: {u.transcript}</div>
                   </div>
                 )}
@@ -451,89 +430,39 @@ export default function LeadModal({ lead, tags, onClose, onSave }) {
               </div>
             ))}
           </div>
+
           {/* Add update buttons */}
           <div style={{ display: "flex", gap: 10, marginTop: 7 }}>
-            <button
-              type="button"
-              style={{
-                background: "#353638",
-                color: "#fff",
-                fontWeight: 600,
-                border: "none",
-                borderRadius: 7,
-                padding: "8px 17px",
-                cursor: "pointer",
-                fontSize: "1em",
-              }}
-              onClick={() => handleAddUpdate("note")}
-            >
+            <button type="button" style={btnSecondary} onClick={() => openAddUpdate("note")}>
               + Add Update
             </button>
-            <button
-              type="button"
-              style={{
-                background: "#353638",
-                color: "#fff",
-                fontWeight: 600,
-                border: "none",
-                borderRadius: 7,
-                padding: "8px 17px",
-                cursor: "pointer",
-                fontSize: "1em",
-              }}
-              onClick={() => handleAddUpdate("voice")}
-            >
+            <button type="button" style={btnSecondary} onClick={() => openAddUpdate("voice")}>
               + Voice Note
             </button>
           </div>
-          {/* Call QR code if phone provided */}
-          {phone && (
-            <div style={{ textAlign: "center", marginTop: 25 }}>
-              <div style={{ fontWeight: 600, color: "#bbb", marginBottom: 9 }}>Scan to call on your phone:</div>
+
+          {/* Call QR */}
+          {!!phone && (
+            <div style={{ textAlign: "center", marginTop: 22 }}>
+              <div style={{ fontWeight: 600, color: "#bbb", marginBottom: 9 }}>
+                Scan to call on your phone:
+              </div>
               <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
                 <QRCodeSVG value={`tel:${phone}`} size={110} fgColor="#1bc982" />
               </div>
-              <div style={{ color: "#888", fontSize: 12 }}>Or use your computer with calling software (like Skype or Teams) or just dial {phone}</div>
+              <div style={{ color: "#888", fontSize: 12 }}>
+                Or call via your computer app, or dial {phone}
+              </div>
             </div>
           )}
         </div>
-        {/* Save/Cancel buttons */}
-        <div style={{
-          display: "flex",
-          gap: 12,
-          marginTop: 15,
-          justifyContent: "flex-end",
-          padding: "0 26px"
-        }}>
-          <button
-            type="submit"
-            style={{
-              background: "#1bc982",
-              color: "#232323",
-              fontWeight: 600,
-              border: "none",
-              borderRadius: 7,
-              padding: "10px 22px",
-              cursor: "pointer",
-              fontSize: "1em",
-            }}
-          >
-            Save
+
+        {/* Actions */}
+        <div style={footer}>
+          <button type="submit" disabled={saving} style={btnPrimary}>
+            {saving ? "Saving…" : "Save"}
           </button>
-          <button
-            type="button"
-            onClick={onClose}
-            style={{
-              background: "#353638",
-              color: "#fff",
-              fontWeight: 600,
-              border: "none",
-              borderRadius: 7,
-              padding: "10px 22px",
-              cursor: "pointer",
-              fontSize: "1em",
-            }}
-          >
+          <button type="button" onClick={onClose} style={btnGhost}>
             Cancel
           </button>
         </div>
@@ -541,3 +470,201 @@ export default function LeadModal({ lead, tags, onClose, onSave }) {
     </div>
   );
 }
+
+/* ----------------------- styles ----------------------- */
+const backdrop = {
+  position: "fixed",
+  left: 0,
+  top: 0,
+  zIndex: 70,
+  width: "100vw",
+  height: "100vh",
+  background: "#191b1eb9",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+};
+
+const overlay = {
+  position: "fixed",
+  left: 0,
+  top: 0,
+  zIndex: 71,
+  width: "100vw",
+  height: "100vh",
+  background: "#232324cc",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+};
+
+const sheet = {
+  background: "#232324",
+  borderRadius: 13,
+  minWidth: 320,
+  maxWidth: 480,
+  width: "92vw",
+  boxShadow: "0 2px 16px #000c",
+  padding: "24px 26px",
+  color: "#eee",
+};
+
+const sheetTitle = { margin: "0 0 12px 0", fontWeight: 800, fontSize: 18, color: "#fff" };
+
+const modal = {
+  background: "#232324",
+  borderRadius: 14,
+  minWidth: 320,
+  maxWidth: 520,
+  boxShadow: "0 8px 40px #000b",
+  margin: "40px 0",
+  width: "92vw",
+  display: "flex",
+  flexDirection: "column",
+  color: "#eee",
+  border: "1.5px solid #292929",
+  position: "relative",
+  maxHeight: "calc(100vh - 80px)",
+  overflowY: "auto",
+};
+
+const title = {
+  margin: "0 0 15px 0",
+  fontWeight: 800,
+  color: "#fff",
+  fontSize: 22,
+  letterSpacing: 0.01,
+  lineHeight: 1.22,
+};
+
+const input = {
+  padding: "10px",
+  fontSize: "1.02em",
+  border: "1.2px solid #313336",
+  borderRadius: 7,
+  background: "#242529",
+  color: "#eee",
+  width: "100%",
+  boxSizing: "border-box",
+};
+
+const textarea = {
+  padding: "10px",
+  fontSize: "1.05em",
+  minHeight: 70,
+  border: "1.2px solid #303236",
+  borderRadius: 7,
+  background: "#202124",
+  color: "#fff",
+  resize: "vertical",
+  width: "100%",
+  boxSizing: "border-box",
+};
+
+const timelineBox = {
+  margin: "16px 0 0 0",
+  background: "#29292c",
+  borderRadius: 8,
+  padding: "11px 13px",
+  minHeight: 48,
+  maxHeight: 200,
+  overflowY: "auto",
+};
+
+const timelineHeader = { color: "#bbb", fontWeight: 800, fontSize: 14, marginBottom: 6 };
+
+const footer = {
+  display: "flex",
+  gap: 12,
+  marginTop: 15,
+  justifyContent: "flex-end",
+  padding: "0 26px 20px",
+};
+
+const closeX = {
+  position: "absolute",
+  right: 18,
+  top: 16,
+  background: "none",
+  border: "none",
+  fontSize: 23,
+  color: "#aaa",
+  cursor: "pointer",
+  zIndex: 2,
+  fontWeight: 800,
+  lineHeight: 1,
+};
+
+const errorBox = {
+  background: "#3a1717",
+  color: "#ffd1d1",
+  border: "1px solid #5a1f1f",
+  borderRadius: 8,
+  padding: "8px 10px",
+  marginBottom: 10,
+  fontWeight: 700,
+};
+
+const pillNote = {
+  color: "#bbb",
+  background: "#232323",
+  borderRadius: 7,
+  padding: "7px 10px",
+  marginTop: 6,
+};
+
+const btnPrimary = {
+  background: "#1bc982",
+  color: "#232323",
+  fontWeight: 800,
+  border: "none",
+  borderRadius: 7,
+  padding: "10px 22px",
+  cursor: "pointer",
+  fontSize: "1em",
+};
+
+const btnSecondary = {
+  background: "#353638",
+  color: "#fff",
+  fontWeight: 700,
+  border: "1.2px solid #313336",
+  borderRadius: 7,
+  padding: "9px 18px",
+  cursor: "pointer",
+  fontSize: "1em",
+};
+
+const btnDanger = {
+  background: "#e66565",
+  color: "#fff",
+  fontWeight: 800,
+  border: "none",
+  borderRadius: 7,
+  padding: "9px 18px",
+  cursor: "pointer",
+  fontSize: "1em",
+};
+
+const btnGhost = {
+  background: "#29292c",
+  color: "#fff",
+  fontWeight: 700,
+  border: "1.2px solid #3a3a3a",
+  borderRadius: 7,
+  padding: "10px 22px",
+  cursor: "pointer",
+  fontSize: "1em",
+};
+
+const miniBtnLink = {
+  background: "#232323",
+  color: "#fff",
+  border: "1px solid #3a3a3a",
+  borderRadius: 6,
+  padding: "6px 10px",
+  fontWeight: 800,
+  fontSize: 12,
+  textDecoration: "none",
+  display: "inline-block",
+};

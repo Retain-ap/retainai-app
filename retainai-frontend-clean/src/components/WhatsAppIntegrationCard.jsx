@@ -1,7 +1,22 @@
-import React, { useEffect, useState } from "react";
+// src/components/WhatsAppIntegrationCard.jsx
+import React, { useEffect, useRef, useState } from "react";
 import { SiWhatsapp } from "react-icons/si";
 
-// Add any country codes you want here!
+/* ---- API base (CRA + Vite safe) ---- */
+const API_BASE =
+  (typeof import.meta !== "undefined" &&
+    import.meta.env &&
+    import.meta.env.VITE_API_BASE_URL) ||
+  (typeof process !== "undefined" &&
+    process.env &&
+    process.env.REACT_APP_API_BASE) ||
+  (typeof window !== "undefined" &&
+  window.location &&
+  window.location.hostname.includes("localhost")
+    ? "http://localhost:5000"
+    : "https://retainai-app.onrender.com");
+
+/* ---- Countries to offer ---- */
 const COUNTRIES = [
   { code: "+1",  name: "USA/Canada" },
   { code: "+44", name: "UK" },
@@ -15,153 +30,231 @@ const COUNTRIES = [
   { code: "+55", name: "Brazil" },
 ];
 
-// Split a raw number into country code and local part
+/* ---- Helpers ---- */
 function splitCountry(number) {
+  const n = String(number || "");
   for (const c of COUNTRIES) {
-    if (number?.startsWith(c.code)) {
-      return { country: c.code, number: number.slice(c.code.length) };
+    if (n.startsWith(c.code)) {
+      return { country: c.code, number: n.slice(c.code.length) };
     }
   }
-  return { country: "+1", number: number?.replace(/^\+?1/, "") || "" };
+  // default to +1; strip leading +1 if present
+  return { country: "+1", number: n.replace(/^\+?1/, "") || "" };
 }
 
-// Format for display (xxx) xxx-xxxx for US/Canada, or space-separated for others
 function formatPhone(raw, country = "+1") {
-  if (country === "+1" && /^\+1\d{10}$/.test(raw)) {
-    const digits = raw.slice(2);
-    return `(${digits.slice(0,3)}) ${digits.slice(3,6)}-${digits.slice(6)}`;
-  }
-  // For other countries, show as +xx xxx xxx xxxx (group every 3-4 digits)
-  if (/^\+\d{7,15}$/.test(raw)) {
-    // group all after country code into chunks of 3-4
-    const countryLen = country.length;
-    let groups = [];
-    let n = raw.slice(countryLen);
-    while (n.length > 0) {
+  const s = String(raw || "");
+  if (!s.startsWith("+")) return s;
+  if (country === "+1" && /^\+1\d{10}$/.test(s)) {
+    const d = s.slice(2);
+    return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+    }
+  if (/^\+\d{7,15}$/.test(s)) {
+    const cLen = country.length;
+    const rest = s.slice(cLen);
+    const chunks = [];
+    let n = rest;
+    while (n.length) {
       if (n.length > 4) {
-        groups.push(n.slice(0, 3));
+        chunks.push(n.slice(0, 3));
         n = n.slice(3);
       } else {
-        groups.push(n);
+        chunks.push(n);
         n = "";
       }
     }
-    return `${country} ${groups.join(" ")}`;
+    return `${country} ${chunks.join(" ")}`;
   }
-  return raw;
+  return s;
 }
 
-export default function WhatsAppIntegrationCard({ user }) {
+const ping = (name) => window.dispatchEvent(new Event(name));
+
+export default function WhatsAppIntegrationCard({ user, onSaved }) {
   const [loading, setLoading] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [country, setCountry] = useState("+1");
   const [number, setNumber] = useState("");
   const [savedNumber, setSavedNumber] = useState("");
   const [error, setError] = useState("");
+  const fetchAbort = useRef(null);
+  const mounted = useRef(true);
 
-  // --- Load WhatsApp number on mount & user change
   useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      fetchAbort.current?.abort?.();
+    };
+  }, []);
+
+  // Load current user WhatsApp on mount/user change
+  useEffect(() => {
+    if (!user?.email) return;
+
     async function fetchWhatsApp() {
-      setLoading(true); setError("");
+      setLoading(true);
+      setError("");
+
+      // cancel any in-flight fetch
+      fetchAbort.current?.abort?.();
+      const controller = new AbortController();
+      fetchAbort.current = controller;
+
       try {
-        const res = await fetch(`/api/user/${encodeURIComponent(user.email)}`);
-        if (!res.ok) throw new Error("Failed to fetch user");
-        const data = await res.json();
-        setSavedNumber(data.whatsapp || "");
-        if (data.whatsapp) {
-          const { country, number } = splitCountry(data.whatsapp);
-          setCountry(country);
-          setNumber(number);
+        const res = await fetch(
+          `${API_BASE}/api/user/${encodeURIComponent(user.email)}`,
+          { signal: controller.signal, credentials: "include" }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || "Failed to fetch user");
+
+        const wa = String(data.whatsapp || "");
+        if (!mounted.current) return;
+
+        setSavedNumber(wa);
+        if (wa) {
+          const { country: c, number: n } = splitCountry(wa);
+          setCountry(c);
+          setNumber(n.replace(/\D/g, "")); // store only digits
         } else {
           setCountry("+1");
           setNumber("");
         }
       } catch (e) {
-        setError("Failed to load WhatsApp status.");
+        if (e.name !== "AbortError") setError("Failed to load WhatsApp status.");
+      } finally {
+        if (mounted.current) setLoading(false);
       }
-      setLoading(false);
     }
-    if (user?.email) fetchWhatsApp();
-  }, [user]);
 
-  // --- Save number
+    fetchWhatsApp();
+  }, [user?.email]);
+
+  // Save number
   async function handleSave(e) {
     e.preventDefault();
-    if (!number || !/^\d{7,15}$/.test(number)) {
-      setError("Enter a valid phone number (7-15 digits).");
+    setError("");
+
+    // number must be 7–15 digits (local part); final E.164 will be +CC + local
+    if (!/^\d{7,15}$/.test(number)) {
+      setError("Enter a valid phone number (7–15 digits).");
       return;
     }
-    setLoading(true); setError("");
+
     const fullNumber = `${country}${number}`;
+    if (!/^\+\d{8,16}$/.test(fullNumber)) {
+      setError("Phone number format is invalid.");
+      return;
+    }
+
+    setLoading(true);
     try {
-      const res = await fetch("/api/integrations/whatsapp", {
+      const res = await fetch(`${API_BASE}/api/integrations/whatsapp`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ email: user.email, whatsapp: fullNumber }),
       });
-      if (!res.ok) throw new Error("Save failed");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Save failed");
+
       setSavedNumber(fullNumber);
       setEditMode(false);
+      onSaved?.(fullNumber);
+      ping("integrations:changed");
     } catch (e) {
-      setError("Failed to save number.");
+      setError(e.message || "Failed to save number.");
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
-  // --- Disconnect number
+  // Disconnect number
   async function handleDisconnect() {
-    setLoading(true); setError("");
+    setLoading(true);
+    setError("");
     try {
-      const res = await fetch("/api/integrations/whatsapp", {
+      const res = await fetch(`${API_BASE}/api/integrations/whatsapp`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
         body: JSON.stringify({ email: user.email }),
       });
-      if (!res.ok) throw new Error("Failed to disconnect");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Failed to disconnect");
+
       setSavedNumber("");
       setNumber("");
-      setEditMode(false);
       setCountry("+1");
+      setEditMode(false);
+      onSaved?.("");
+      ping("integrations:changed");
     } catch (e) {
-      setError("Failed to disconnect.");
+      setError(e.message || "Failed to disconnect.");
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
+  const hasSaved = Boolean(savedNumber);
+
   return (
-    <div className="integration-card" style={{ minWidth: 320, maxWidth: 350, alignItems: "center" }}>
+    <div
+      className="integration-card"
+      style={{ minWidth: 320, maxWidth: 350, alignItems: "center" }}
+      aria-busy={loading ? "true" : "false"}
+    >
       <span style={{ fontSize: 32, color: "#25D366", marginBottom: 10 }}>
-        <SiWhatsapp className="integration-icon whatsapp" />
+        <SiWhatsapp className="integration-icon whatsapp" aria-hidden />
       </span>
+
       <div className="integration-center" style={{ width: "100%", alignItems: "center" }}>
         <div className="integration-title" style={{ marginBottom: 4 }}>
           WhatsApp
         </div>
+
         <div className="integration-desc" style={{ marginBottom: 16 }}>
-          {savedNumber
+          {hasSaved
             ? "Your WhatsApp number is connected."
             : "Add your WhatsApp phone number to enable messaging integration."}
         </div>
-        {savedNumber && !editMode ? (
-          <div style={{
-            color: "#25D366", fontWeight: 700, fontSize: 17, marginBottom: 10, letterSpacing: "0.01em"
-          }}>
-            <span style={{
-              background: "#232323", padding: "7px 20px", borderRadius: 7, fontWeight: 900, fontSize: 17, border: "1.5px solid #25D366"
-            }}>
+
+        {hasSaved && !editMode && (
+          <div
+            style={{
+              color: "#25D366",
+              fontWeight: 700,
+              fontSize: 17,
+              marginBottom: 10,
+              letterSpacing: "0.01em",
+            }}
+          >
+            <span
+              style={{
+                background: "#232323",
+                padding: "7px 20px",
+                borderRadius: 7,
+                fontWeight: 900,
+                fontSize: 17,
+                border: "1.5px solid #25D366",
+              }}
+            >
               {formatPhone(savedNumber, splitCountry(savedNumber).country)}
             </span>
           </div>
-        ) : null}
+        )}
 
         {editMode ? (
           <form style={{ width: "100%", marginBottom: 12 }} onSubmit={handleSave}>
             <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              <label className="sr-only" htmlFor="wa-country">Country code</label>
               <select
+                id="wa-country"
                 value={country}
-                onChange={e => {
+                onChange={(e) => {
                   setCountry(e.target.value);
-                  setNumber(""); // reset number when changing country
+                  setNumber(""); // reset when changing country
                 }}
                 style={{
                   fontSize: 15,
@@ -170,18 +263,25 @@ export default function WhatsAppIntegrationCard({ user }) {
                   border: "1.7px solid #25D366",
                   background: "#191a1d",
                   color: "#fff",
-                  flex: "0 0 110px"
+                  flex: "0 0 120px",
                 }}
                 disabled={loading}
               >
-                {COUNTRIES.map(c => (
-                  <option value={c.code} key={c.code}>{c.name} ({c.code})</option>
+                {COUNTRIES.map((c) => (
+                  <option value={c.code} key={c.code}>
+                    {c.name} ({c.code})
+                  </option>
                 ))}
               </select>
+
+              <label className="sr-only" htmlFor="wa-number">Phone number</label>
               <input
+                id="wa-number"
                 type="tel"
-                className="field-input"
+                inputMode="numeric"
+                autoComplete="tel"
                 placeholder="number"
+                aria-label="Phone number"
                 style={{
                   padding: "10px 16px",
                   width: "100%",
@@ -189,15 +289,16 @@ export default function WhatsAppIntegrationCard({ user }) {
                   border: "1.7px solid #25D366",
                   fontSize: 17,
                   color: "#fff",
-                  background: "#191a1d"
+                  background: "#191a1d",
                 }}
                 value={number}
-                onChange={e => setNumber(e.target.value.replace(/\D/g, ""))}
+                onChange={(e) => setNumber(e.target.value.replace(/\D/g, ""))}
                 disabled={loading}
                 autoFocus
                 maxLength={15}
               />
             </div>
+
             <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
               <button
                 className="integration-btn"
@@ -208,8 +309,14 @@ export default function WhatsAppIntegrationCard({ user }) {
                 {loading ? "Saving..." : "Save"}
               </button>
               <button
+                type="button"
                 className="integration-btn-outline"
-                onClick={e => { e.preventDefault(); setEditMode(false); setCountry(splitCountry(savedNumber).country); setNumber(splitCountry(savedNumber).number); }}
+                onClick={() => {
+                  const parts = splitCountry(savedNumber);
+                  setCountry(parts.country || "+1");
+                  setNumber((parts.number || "").replace(/\D/g, ""));
+                  setEditMode(false);
+                }}
                 style={{ flex: 1 }}
                 disabled={loading}
               >
@@ -219,7 +326,7 @@ export default function WhatsAppIntegrationCard({ user }) {
           </form>
         ) : (
           <div style={{ display: "flex", gap: 10, width: "100%" }}>
-            {savedNumber ? (
+            {hasSaved ? (
               <>
                 <button
                   className="integration-btn"
@@ -243,14 +350,20 @@ export default function WhatsAppIntegrationCard({ user }) {
                 className="integration-btn"
                 style={{ background: "#25D366", color: "#232323", flex: 1 }}
                 onClick={() => setEditMode(true)}
-                disabled={loading}
+                disabled={loading || !user?.email}
+                title={!user?.email ? "Please sign in first" : "Connect WhatsApp"}
               >
                 Connect
               </button>
             )}
           </div>
         )}
-        {error && <div className="integration-error" style={{ marginTop: 10 }}>{error}</div>}
+
+        {error && (
+          <div className="integration-error" style={{ marginTop: 10 }}>
+            {error}
+          </div>
+        )}
       </div>
     </div>
   );

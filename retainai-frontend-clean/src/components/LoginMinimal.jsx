@@ -1,10 +1,60 @@
 // src/components/MinimalLogin.jsx
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useLocation } from "react-router-dom";
+import { GoogleLogin } from "@react-oauth/google";
 import logo from "../assets/logo.png";
 import "./MinimalLogin.css";
 
+// ---- API base (CRA + Vite safe) ----
+const API_BASE =
+  (typeof import.meta !== "undefined" &&
+    import.meta.env &&
+    import.meta.env.VITE_API_BASE_URL) ||
+  (typeof process !== "undefined" &&
+    process.env &&
+    process.env.REACT_APP_API_BASE) ||
+  (typeof window !== "undefined" &&
+  window.location &&
+  window.location.hostname.includes("localhost")
+    ? "http://localhost:5000"
+    : "https://retainai-app.onrender.com");
+
+const SUPPORT_EMAIL = "owner@retainai.ca";
+
+function Banner({ tone = "info", children }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className={`mlogin-banner ${tone}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+function strengthOf(pw = "") {
+  let score = 0;
+  if (pw.length >= 8) score++;
+  if (/[A-Z]/.test(pw)) score++;
+  if (/[a-z]/.test(pw)) score++;
+  if (/\d/.test(pw)) score++;
+  if (/[^A-Za-z0-9]/.test(pw)) score++;
+  const label =
+    score >= 4 ? "Strong" : score === 3 ? "Medium" : pw ? "Weak" : "";
+  return { score, label };
+}
+
+const emailOk = (v) => /^\S+@\S+\.\S+$/.test(v || "");
+
 export default function MinimalLogin() {
-  const [mode, setMode] = useState("signup"); // default to signup for demo, use 'login' if you prefer
+  const navigate = useNavigate();
+  const { search } = useLocation();
+  const params = useMemo(() => new URLSearchParams(search), [search]);
+  const initialMode = params.get("mode") === "login" ? "login" : "signup";
+  const next = params.get("next") || "/app";
+
+  const [mode, setMode] = useState(initialMode); // "signup" | "login"
   const [step, setStep] = useState(0);
   const [form, setForm] = useState({
     email: "",
@@ -13,98 +63,291 @@ export default function MinimalLogin() {
     business: "",
   });
   const [error, setError] = useState("");
+  const [capsOn, setCapsOn] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const emailRef = useRef(null);
+  const pwRef = useRef(null);
 
-  // Handle Google OAuth here (fill in your actual logic)
-  function handleGoogle() {
-    alert("Google OAuth coming soon!");
-  }
+  // Redirect if already signed in
+  useEffect(() => {
+    try {
+      const u = JSON.parse(localStorage.getItem("user") || "null");
+      if (u?.email) navigate("/app", { replace: true });
+    } catch {}
+  }, [navigate]);
 
-  function nextStep() {
-    if (mode === "signup") {
-      if (step === 0 && !form.email) return setError("Email required.");
-      if (step === 1 && !form.name) return setError("Name required.");
-      if (step === 2 && !form.business) return setError("Business required.");
-      setError("");
-      setStep(step + 1);
+  // -------- Google OAuth --------
+  async function onGoogleSuccess(credentialResponse) {
+    setBusy(true);
+    setError("");
+    try {
+      const token = credentialResponse.credential;
+      const res = await fetch(`${API_BASE}/api/oauth/google`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credential: token }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Google login failed.");
+        setBusy(false);
+        return;
+      }
+      localStorage.setItem(
+        "user",
+        JSON.stringify({
+          email: data.user.email,
+          name: data.user.name,
+          logo: data.user.logo,
+          businessType: data.user.businessType,
+        })
+      );
+      localStorage.setItem("userEmail", data.user.email);
+      document.cookie = `user_email=${encodeURIComponent(
+        data.user.email
+      )}; Path=/; SameSite=Lax; Max-Age=2592000`;
+      navigate(next, { replace: true });
+    } catch {
+      setError("Google login error.");
+    } finally {
+      setBusy(false);
     }
   }
 
+  // -------- Signup wizard logic --------
+  function nextStep() {
+    setError("");
+    if (step === 0 && !emailOk(form.email)) {
+      setError("Please enter a valid email.");
+      emailRef.current?.focus();
+      return;
+    }
+    if (step === 1 && !form.name.trim()) {
+      setError("Name required.");
+      return;
+    }
+    if (step === 2 && !form.business.trim()) {
+      setError("Business required.");
+      return;
+    }
+    setStep((s) => Math.min(3, s + 1));
+  }
   function prevStep() {
     setError("");
-    setStep(Math.max(0, step - 1));
+    setStep((s) => Math.max(0, s - 1));
   }
 
-  function handleSignup(e) {
+  // -------- API calls --------
+  async function handleSignup(e) {
     e.preventDefault();
-    if (!form.password) return setError("Password required.");
-    // Replace with your actual signup logic
-    alert("Account created!");
+    setError("");
+    const { score } = strengthOf(form.password);
+    if (score < 3) {
+      setError("Please choose a stronger password.");
+      pwRef.current?.focus();
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/signup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: form.email,
+          password: form.password,
+          name: form.name,
+          businessType: form.business,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Signup failed.");
+        setBusy(false);
+        return;
+      }
+      // Persist session (mirror your Login.jsx)
+      localStorage.setItem(
+        "user",
+        JSON.stringify({
+          email: form.email,
+          name: form.name,
+          logo: data.user?.logo,
+          businessType: form.business,
+        })
+      );
+      localStorage.setItem("userEmail", form.email);
+      document.cookie = `user_email=${encodeURIComponent(
+        form.email
+      )}; Path=/; SameSite=Lax; Max-Age=2592000`;
+      navigate("/app", { replace: true });
+    } catch {
+      setError("Network error. Please try again.");
+    } finally {
+      setBusy(false);
+    }
   }
 
-  function handleLogin(e) {
+  async function handleLogin(e) {
     e.preventDefault();
-    if (!form.email || !form.password) return setError("All fields required.");
-    // Replace with your actual login logic
-    alert("Logged in!");
+    setError("");
+    if (!emailOk(form.email) || !form.password) {
+      setError("Email and password are required.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: form.email, password: form.password }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Login failed.");
+        setBusy(false);
+        return;
+      }
+      localStorage.setItem(
+        "user",
+        JSON.stringify({
+          email: form.email,
+          businessType: data.user.businessType,
+          name: data.user.name,
+          logo: data.user.logo,
+        })
+      );
+      localStorage.setItem("userEmail", form.email);
+      document.cookie = `user_email=${encodeURIComponent(
+        form.email
+      )}; Path=/; SameSite=Lax; Max-Age=2592000`;
+      navigate(next, { replace: true });
+    } catch {
+      setError("Network error. Please try again.");
+    } finally {
+      setBusy(false);
+    }
   }
 
-  // Slides/steps for SIGNUP
-  const signupSteps = [
-    <>
-      <label className="mlabel">What's your email?</label>
-      <input
-        className="minput"
-        autoFocus
-        type="email"
-        placeholder="me@email.com"
-        value={form.email}
-        onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-      />
-      <button type="button" className="mbtn next" onClick={nextStep}>Next</button>
-    </>,
-    <>
-      <label className="mlabel">Your full name</label>
-      <input
-        className="minput"
-        type="text"
-        placeholder="Full Name"
-        value={form.name}
-        onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-      />
-      <div className="step-btns">
-        <button type="button" className="mbtn back" onClick={prevStep}>Back</button>
-        <button type="button" className="mbtn next" onClick={nextStep}>Next</button>
-      </div>
-    </>,
-    <>
-      <label className="mlabel">What type of business?</label>
-      <input
-        className="minput"
-        type="text"
-        placeholder="Eg. Salon, Real Estate"
-        value={form.business}
-        onChange={e => setForm(f => ({ ...f, business: e.target.value }))}
-      />
-      <div className="step-btns">
-        <button type="button" className="mbtn back" onClick={prevStep}>Back</button>
-        <button type="button" className="mbtn next" onClick={nextStep}>Next</button>
-      </div>
-    </>,
-    <>
-      <label className="mlabel">Set a password</label>
-      <input
-        className="minput"
-        type="password"
-        placeholder="Password"
-        value={form.password}
-        onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-      />
-      <div className="step-btns">
-        <button type="button" className="mbtn back" onClick={prevStep}>Back</button>
-        <button type="submit" className="mbtn primary">Create account</button>
-      </div>
-    </>
+  // -------- Password strength meter --------
+  const pw = strengthOf(form.password);
+  const pwPct = Math.min(100, (pw.score / 5) * 100);
+
+  // -------- Slides for signup --------
+  const signupSlides = [
+    {
+      key: "email",
+      content: (
+        <>
+          <label className="mlabel">What's your email?</label>
+          <input
+            ref={emailRef}
+            className="minput"
+            autoFocus
+            type="email"
+            placeholder="me@email.com"
+            value={form.email}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, email: e.target.value.trim() }))
+            }
+            onKeyDown={(e) => e.key === "Enter" && nextStep()}
+          />
+          <button type="button" className="mbtn next" onClick={nextStep}>
+            Next
+          </button>
+        </>
+      ),
+    },
+    {
+      key: "name",
+      content: (
+        <>
+          <label className="mlabel">Your full name</label>
+          <input
+            className="minput"
+            type="text"
+            placeholder="Full Name"
+            value={form.name}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, name: e.target.value }))
+            }
+            onKeyDown={(e) => e.key === "Enter" && nextStep()}
+          />
+          <div className="step-btns">
+            <button type="button" className="mbtn back" onClick={prevStep}>
+              Back
+            </button>
+            <button type="button" className="mbtn next" onClick={nextStep}>
+              Next
+            </button>
+          </div>
+        </>
+      ),
+    },
+    {
+      key: "business",
+      content: (
+        <>
+          <label className="mlabel">What type of business?</label>
+          <input
+            className="minput"
+            type="text"
+            placeholder="Eg. Salon, Real Estate"
+            value={form.business}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, business: e.target.value }))
+            }
+            onKeyDown={(e) => e.key === "Enter" && nextStep()}
+          />
+          <div className="step-btns">
+            <button type="button" className="mbtn back" onClick={prevStep}>
+              Back
+            </button>
+            <button type="button" className="mbtn next" onClick={nextStep}>
+              Next
+            </button>
+          </div>
+        </>
+      ),
+    },
+    {
+      key: "password",
+      content: (
+        <>
+          <label className="mlabel">Set a password</label>
+          <input
+            ref={pwRef}
+            className="minput"
+            type="password"
+            placeholder="Password (8+ chars)"
+            value={form.password}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, password: e.target.value }))
+            }
+            onKeyUp={(e) => setCapsOn(e.getModifierState?.("CapsLock"))}
+          />
+          {capsOn && <div className="tiny-hint">Caps Lock is on</div>}
+          <div className="pw-meter">
+            <div className="pw-fill" style={{ width: `${pwPct}%` }} />
+          </div>
+          <div className={`pw-label ${pw.label.toLowerCase()}`}>
+            {pw.label}
+          </div>
+          <div className="step-btns">
+            <button type="button" className="mbtn back" onClick={prevStep}>
+              Back
+            </button>
+            <button type="submit" className="mbtn primary" disabled={busy}>
+              {busy ? "Creating…" : "Create account"}
+            </button>
+          </div>
+        </>
+      ),
+    },
   ];
+
+  // -------- UI --------
+  const totalSteps = signupSlides.length;
+  const progressPct = Math.round(((step + 1) / totalSteps) * 100);
 
   return (
     <div className="mlogin-bg">
@@ -114,20 +357,31 @@ export default function MinimalLogin() {
           <img src={logo} className="mlogin-logo" alt="RetainAI" />
           <div className="mlogin-title">RetainAI</div>
           <div className="mlogin-desc">Client relationships. Done right.</div>
+          {mode === "signup" && (
+            <div className="progress">
+              <div className="progress-fill" style={{ width: `${progressPct}%` }} />
+            </div>
+          )}
         </div>
+
         {/* Right Form Card */}
         <div className="mlogin-right">
           <form
             className="mlogin-form"
             autoComplete="off"
             onSubmit={mode === "signup" ? handleSignup : handleLogin}
+            aria-busy={busy}
           >
             <div className="mlogin-headline">
               {mode === "signup" ? "Create your account" : "Sign in"}
             </div>
-            {error && <div className="mlogin-error">{error}</div>}
+
+            {error && <Banner tone="error">{error}</Banner>}
+
             {mode === "signup" ? (
-              <div className="mlogin-slide">{signupSteps[step]}</div>
+              <div key={signupSlides[step].key} className="mlogin-slide">
+                {signupSlides[step].content}
+              </div>
             ) : (
               <>
                 <label className="mlabel">Your email</label>
@@ -136,7 +390,10 @@ export default function MinimalLogin() {
                   type="email"
                   placeholder="me@email.com"
                   value={form.email}
-                  onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, email: e.target.value }))
+                  }
+                  onKeyDown={(e) => e.key === "Enter" && handleLogin(e)}
                   autoFocus
                 />
                 <label className="mlabel">Password</label>
@@ -145,35 +402,78 @@ export default function MinimalLogin() {
                   type="password"
                   placeholder="Password"
                   value={form.password}
-                  onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, password: e.target.value }))
+                  }
+                  onKeyUp={(e) => setCapsOn(e.getModifierState?.("CapsLock"))}
                 />
-                <button className="mbtn primary" type="submit">Login</button>
+                {capsOn && <div className="tiny-hint">Caps Lock is on</div>}
+                <button className="mbtn primary" type="submit" disabled={busy}>
+                  {busy ? "Signing in…" : "Login"}
+                </button>
               </>
             )}
-            <button
-              type="button"
-              className="mbtn google"
-              onClick={handleGoogle}
-            >
-              <span style={{ display: "flex", alignItems: "center", marginRight: 9 }}>
-                <svg width="22" height="22" viewBox="0 0 48 48"><g><path fill="#4285F4" d="M44.5 20H24v8.5h11.7C34.6 32.6 29.9 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c2.8 0 5.3.9 7.4 2.6l6.3-6.3C33.7 5.1 29.1 3 24 3 12.9 3 4 11.9 4 23s8.9 20 20 20c11 0 19-7.9 19-20 0-1.3-.1-2.7-.3-4z"/><path fill="#34A853" d="M6.3 14.7l7 5.1C15.2 17 18.4 15 24 15c2.8 0 5.3.9 7.4 2.6l6.3-6.3C33.7 5.1 29.1 3 24 3 16.3 3 9.2 7.7 6.3 14.7z"/><path fill="#FBBC05" d="M24 43c5.6 0 10.3-1.8 13.7-5l-6.3-5.2c-2 .8-4.2 1.2-7.4 1.2-5.9 0-10.6-3.4-12.3-8.3l-7 5.4C9.2 39.2 16.3 43 24 43z"/><path fill="#EA4335" d="M44.5 20H24v8.5h11.7c-1.1 2.9-4.4 6-11.7 6-6.6 0-12-5.4-12-12s5.4-12 12-12c2.8 0 5.3.9 7.4 2.6l6.3-6.3C33.7 5.1 29.1 3 24 3 12.9 3 4 11.9 4 23s8.9 20 20 20c11 0 19-7.9 19-20 0-1.3-.1-2.7-.3-4z"/></g></svg>
-              </span>
-              {mode === "signup" ? "Sign up with Google" : "Sign in with Google"}
-            </button>
+
+            {/* Google OAuth */}
+            <div className="oauth-sep">
+              <span className="rule" />
+              <span className="or">or</span>
+              <span className="rule" />
+            </div>
+
+            <div className="google-wrap">
+              <GoogleLogin
+                onSuccess={onGoogleSuccess}
+                onError={() => setError("Google Login Failed")}
+                width="100%"
+                shape="pill"
+                theme="filled_black"
+                text={mode === "signup" ? "signup_with" : "signin_with"}
+              />
+            </div>
+
+            {/* Toggle */}
             <div className="mlogin-toggle">
               {mode === "signup" ? (
-                <>Already have an account?{" "}
-                  <span onClick={() => { setMode("login"); setStep(0); setError(""); }}>
+                <>
+                  Already have an account?{" "}
+                  <span
+                    onClick={() => {
+                      setMode("login");
+                      setStep(0);
+                      setError("");
+                    }}
+                  >
                     Sign in
                   </span>
                 </>
               ) : (
-                <>No account?{" "}
-                  <span onClick={() => { setMode("signup"); setStep(0); setError(""); }}>
+                <>
+                  No account?{" "}
+                  <span
+                    onClick={() => {
+                      setMode("signup");
+                      setStep(0);
+                      setError("");
+                    }}
+                  >
                     Create one
                   </span>
                 </>
               )}
+            </div>
+
+            {/* Support link */}
+            <div className="mlogin-support">
+              Need help?{" "}
+              <a
+                href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(
+                  "Login help — RetainAI"
+                )}`}
+              >
+                Contact support
+              </a>
+              .
             </div>
           </form>
         </div>

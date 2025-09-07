@@ -9,6 +9,7 @@ import {
   FaCalendarWeek,
   FaForward
 } from "react-icons/fa";
+import { API_BASE } from "../config";
 
 /* === THEME (aligned with Analytics/Calendar) === */
 const BG = "#181a1b";
@@ -84,7 +85,6 @@ const saveJSON = (k, obj) => {
 const uuid = () =>
   "xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx".replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
-    // eslint-disable-next-line no-mixed-operators
     const v = c === "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
@@ -237,8 +237,6 @@ function categorize(appointments) {
 }
 
 export default function Appointments({ user, leads = [], setLeads }) {
-  const API = process.env.REACT_APP_API_URL;
-
   /** Backend list straight from server */
   const [backendAppointments, setBackendAppointments] = useState([]);
 
@@ -273,11 +271,21 @@ export default function Appointments({ user, leads = [], setLeads }) {
 
   /* fetch backend rows */
   const fetchBackend = async () => {
-    if (!API || !user?.email) return;
+    if (!API_BASE || !user?.email) return;
     try {
       const r = await fetch(
-        `${API}/api/appointments/${encodeURIComponent(user.email)}`
+        `${API_BASE}/api/appointments/${encodeURIComponent(user.email)}`,
+        {
+          credentials: "include",
+          headers: {
+            "Cache-Control": "no-cache"
+          }
+        }
       );
+      if (r.status === 401) {
+        // not authenticated to backend
+        return setBackendAppointments([]);
+      }
       const j = await r.json().catch(() => ({}));
       setBackendAppointments(
         Array.isArray(j?.appointments) ? j.appointments : []
@@ -304,7 +312,7 @@ export default function Appointments({ user, leads = [], setLeads }) {
       document.removeEventListener("visibilitychange", onVis);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [API, user?.email]);
+  }, [API_BASE, user?.email]);
 
   /**
    * STEP 1 — Build stable client RIDs (slot map).
@@ -414,7 +422,7 @@ export default function Appointments({ user, leads = [], setLeads }) {
 
   async function apiUpdateBackend(appt, updates) {
     const sid = serverIdOf(appt);
-    if (!API || !user?.email || !sid) return false; // cannot update without real id
+    if (!API_BASE || !user?.email || !sid) return false; // cannot update without real id
     try {
       const body = {
         ...updates,
@@ -437,12 +445,16 @@ export default function Appointments({ user, leads = [], setLeads }) {
           : undefined
       };
       const res = await fetch(
-        `${API}/api/appointments/${encodeURIComponent(
+        `${API_BASE}/api/appointments/${encodeURIComponent(
           user.email
         )}/${encodeURIComponent(String(sid))}`,
         {
           method: "PUT", // change to "PATCH" if your Flask route expects PATCH
-          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          headers: {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-cache"
+          },
           body: JSON.stringify(body)
         }
       );
@@ -454,13 +466,17 @@ export default function Appointments({ user, leads = [], setLeads }) {
 
   async function apiDeleteBackend(appt) {
     const sid = serverIdOf(appt);
-    if (!API || !user?.email || !sid) return false; // cannot DELETE without real id
+    if (!API_BASE || !user?.email || !sid) return false; // cannot DELETE without real id
     try {
       const res = await fetch(
-        `${API}/api/appointments/${encodeURIComponent(
+        `${API_BASE}/api/appointments/${encodeURIComponent(
           user.email
         )}/${encodeURIComponent(String(sid))}`,
-        { method: "DELETE" }
+        {
+          method: "DELETE",
+          credentials: "include",
+          headers: { "Cache-Control": "no-cache" }
+        }
       );
       return res.ok;
     } catch {

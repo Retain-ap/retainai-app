@@ -1,4 +1,18 @@
 // src/registerPush.js
+// ---- API base (CRA + Vite safe) ----
+const API_BASE =
+  (typeof import.meta !== "undefined" &&
+    import.meta.env &&
+    import.meta.env.VITE_API_BASE_URL) ||
+  (typeof process !== "undefined" &&
+    process.env &&
+    process.env.REACT_APP_API_BASE) ||
+  (typeof window !== "undefined" &&
+  window.location &&
+  window.location.hostname.includes("localhost")
+    ? "http://localhost:5000"
+    : "https://retainai-app.onrender.com");
+
 export async function registerPush(userEmail) {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
     alert('Push notifications are not supported on this browser.');
@@ -23,7 +37,7 @@ export async function registerPush(userEmail) {
     });
 
     // Send to backend
-    await fetch('http://localhost:5000/api/save-subscription', {
+    await fetch(`${API_BASE}/api/save-subscription`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ subscription, email: userEmail })

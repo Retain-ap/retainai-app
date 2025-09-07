@@ -2,12 +2,24 @@
 import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { QRCodeSVG } from "qrcode.react";
 
+/**
+ * LeadDrawer
+ * - Details / Notes / Reminders
+ * - Optimistic persistence with graceful fallback
+ * - Add / delete notes
+ * - Add / delete reminders
+ * - Quick actions: Email, Call, WhatsApp, Copy
+ * - QR for quick mobile call
+ */
+
 const TABS = ["Details", "Notes", "Reminders"];
 
+// Prefer explicit env var; otherwise same-origin backend
 const API_BASE =
   (process.env.REACT_APP_API_BASE && process.env.REACT_APP_API_BASE.trim()) ||
-  window.location.origin.replace(/\/$/, "");
+  (typeof window !== "undefined" ? window.location.origin.replace(/\/$/, "") : "");
 
+// --- migrations / helpers ---
 function migrateNotesToUpdates(lead) {
   if (lead?.updates && Array.isArray(lead.updates)) return lead.updates;
   if (lead?.notes) {
@@ -23,6 +35,18 @@ function migrateNotesToUpdates(lead) {
   return [];
 }
 
+function safeStr(v) {
+  return v == null ? "" : String(v);
+}
+
+function phoneToE164Maybe(phone = "") {
+  // best-effort cleanup; keep plus if present
+  const s = String(phone).trim();
+  if (!s) return "";
+  if (s.startsWith("+")) return s.replace(/[^\d+]/g, "");
+  return s.replace(/[^\d]/g, "");
+}
+
 export default function LeadDrawer({
   lead,
   onClose,
@@ -33,22 +57,23 @@ export default function LeadDrawer({
   const [activeTab, setActiveTab] = useState("Details");
   const [showQR, setShowQR] = useState(false);
 
-  // hydrate from backend-provided lead
+  // hydrated states
   const [updates, setUpdates] = useState(migrateNotesToUpdates(lead));
   const [reminders, setReminders] = useState(lead?.reminders || []);
   const [newReminder, setNewReminder] = useState("");
+  const [newNote, setNewNote] = useState("");
+  const [err, setErr] = useState("");
 
   useEffect(() => {
     setUpdates(migrateNotesToUpdates(lead));
     setReminders(lead?.reminders || []);
+    setErr("");
   }, [lead]);
 
-  // ---------- persistence helpers ----------
+  // ---------- current user ----------
   const userEmail = useMemo(() => {
-    // prefer explicit key if you set it elsewhere
-    const storedUE = localStorage.getItem("userEmail");
-    if (storedUE) return storedUE;
-    // otherwise fall back to stored user object
+    const stored = localStorage.getItem("userEmail");
+    if (stored) return stored;
     try {
       const u = JSON.parse(localStorage.getItem("user") || "null");
       if (u?.email) return u.email;
@@ -56,25 +81,24 @@ export default function LeadDrawer({
     return lead?.owner || "";
   }, [lead?.owner]);
 
+  // ---------- persistence helpers ----------
   const persistLeadsArray = useCallback(
     async (mutateFn) => {
-      if (!userEmail) return;
-
+      if (!userEmail) throw new Error("Missing user email");
       // 1) pull latest list
       const res = await fetch(`${API_BASE}/api/leads/${encodeURIComponent(userEmail)}`);
       if (!res.ok) throw new Error("Failed to load leads");
-      const { leads: all } = await res.json();
+      const { leads: all = [] } = await res.json();
 
-      // 2) update the matching lead
+      // 2) update matching
       const idx = all.findIndex(
         (l) =>
-          String(l.id || "") === String(lead?.id || "") ||
+          String(l.id ?? "") === String(lead?.id ?? "") ||
           (lead?.email && l.email === lead.email)
       );
-      if (idx === -1) return;
-
+      if (idx === -1) throw new Error("Lead not found");
       const updated = { ...all[idx] };
-      mutateFn(updated); // apply mutation (e.g., set reminders)
+      mutateFn(updated);
       all[idx] = updated;
 
       // 3) save whole list
@@ -84,16 +108,22 @@ export default function LeadDrawer({
         body: JSON.stringify({ leads: all }),
       });
       if (!save.ok) throw new Error("Failed to save leads");
+
+      // 4) notify parent if provided
+      if (typeof onUpdateLead === "function") {
+        onUpdateLead(updated);
+      }
       return updated;
     },
-    [lead?.email, lead?.id, userEmail]
+    [lead?.email, lead?.id, onUpdateLead, userEmail]
   );
 
   const persistReminders = useCallback(
     async (nextReminders) => {
-      // optimistic UI
+      // optimistic
+      const prev = reminders;
       setReminders(nextReminders);
-
+      setErr("");
       try {
         if (typeof onUpdateLead === "function") {
           onUpdateLead({ ...lead, reminders: nextReminders });
@@ -103,13 +133,38 @@ export default function LeadDrawer({
           });
         }
       } catch (e) {
-        console.warn("Failed to persist reminders:", e);
+        setErr(e.message || "Failed to persist reminders");
+        setReminders(prev); // rollback
       }
     },
-    [lead, onUpdateLead, persistLeadsArray]
+    [lead, onUpdateLead, persistLeadsArray, reminders]
   );
 
-  // ---------- reminders actions ----------
+  const persistUpdates = useCallback(
+    async (nextUpdates) => {
+      const prev = updates;
+      setUpdates(nextUpdates);
+      setErr("");
+      try {
+        if (typeof onUpdateLead === "function") {
+          onUpdateLead({ ...lead, updates: nextUpdates });
+        } else {
+          await persistLeadsArray((l) => {
+            l.updates = nextUpdates;
+            // keep legacy notes in sync with latest note text (optional)
+            const lastNote = [...nextUpdates].reverse().find((u) => u.type === "note");
+            if (lastNote?.text) l.notes = lastNote.text;
+          });
+        }
+      } catch (e) {
+        setErr(e.message || "Failed to persist notes");
+        setUpdates(prev);
+      }
+    },
+    [lead, onUpdateLead, persistLeadsArray, updates]
+  );
+
+  // ---------- actions: reminders ----------
   const addReminder = () => {
     const t = (newReminder || "").trim();
     if (!t) return;
@@ -122,6 +177,43 @@ export default function LeadDrawer({
     const next = reminders.filter((_, idx) => idx !== i);
     persistReminders(next);
   };
+
+  // ---------- actions: notes ----------
+  const addNote = () => {
+    const t = (newNote || "").trim();
+    if (!t) return;
+    const entry = {
+      type: "note",
+      text: t,
+      date: new Date().toISOString(),
+      author: "you",
+    };
+    setNewNote("");
+    persistUpdates([entry, ...updates]);
+  };
+
+  const removeNote = (i) => {
+    const next = updates.filter((_, idx) => idx !== i);
+    persistUpdates(next);
+  };
+
+  // ---------- quick actions ----------
+  const copyToClipboard = async (text, label = "Copied") => {
+    try {
+      await navigator.clipboard.writeText(text);
+      // tiny feedback - optional
+      console.debug(label);
+    } catch {
+      console.warn("Clipboard unavailable");
+    }
+  };
+
+  const whatsappHref = useMemo(() => {
+    if (!lead?.phone) return "";
+    const num = phoneToE164Maybe(lead.phone);
+    if (!num) return "";
+    return `https://wa.me/${num}`;
+  }, [lead?.phone]);
 
   if (!lead) return null;
 
@@ -149,6 +241,9 @@ export default function LeadDrawer({
         padding: 0,
         minWidth: 415,
       }}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Lead details for ${lead.name || lead.email}`}
     >
       {/* Header */}
       <div
@@ -156,6 +251,7 @@ export default function LeadDrawer({
           display: "flex",
           alignItems: "center",
           padding: "26px 22px 11px 22px",
+          gap: 14,
         }}
       >
         <div
@@ -170,15 +266,19 @@ export default function LeadDrawer({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
+            userSelect: "none",
           }}
+          aria-hidden
         >
           {(lead.name || lead.email || "??").slice(0, 2).toUpperCase()}
         </div>
-        <div style={{ marginLeft: 16, flex: 1 }}>
-          <div style={{ color: "#fff", fontWeight: 800, fontSize: 20 }}>
-            {lead.name}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ color: "#fff", fontWeight: 800, fontSize: 20, lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {lead.name || lead.email || "Lead"}
           </div>
-          <div style={{ color: "#aaa", fontSize: 15 }}>{lead.email}</div>
+          <div style={{ color: "#aaa", fontSize: 15, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {lead.email || "—"}
+          </div>
         </div>
         <button
           style={{
@@ -190,8 +290,10 @@ export default function LeadDrawer({
             fontSize: 28,
             cursor: "pointer",
             padding: 8,
+            lineHeight: 1,
           }}
           onClick={onClose}
+          aria-label="Close"
         >
           ×
         </button>
@@ -214,6 +316,7 @@ export default function LeadDrawer({
               marginBottom: 4,
             }}
             onClick={() => setActiveTab(tab)}
+            aria-current={activeTab === tab ? "page" : undefined}
           >
             {tab}
           </button>
@@ -230,9 +333,25 @@ export default function LeadDrawer({
           fontSize: 16,
         }}
       >
+        {err && (
+          <div
+            style={{
+              background: "#3a1717",
+              color: "#ffd1d1",
+              border: "1px solid #5a1f1f",
+              borderRadius: 8,
+              padding: "8px 10px",
+              marginBottom: 10,
+              fontWeight: 700,
+            }}
+          >
+            {err}
+          </div>
+        )}
+
         {activeTab === "Details" && (
           <div style={{ marginBottom: 14 }}>
-            <div>
+            <div style={{ marginBottom: 6 }}>
               <b>Status:</b>{" "}
               <span
                 style={{
@@ -254,81 +373,192 @@ export default function LeadDrawer({
                   : "Active"}
               </span>
             </div>
-            <div>
-              <b>Phone:</b> {lead.phone || "-"}
-            </div>
-            <div>
-              <b>Birthday:</b> {lead.birthday || "-"}
-            </div>
-            <div>
-              <b>Tags:</b>{" "}
-              {(lead.tags || []).map((t) => (
-                <span
-                  key={t}
-                  style={{
-                    background: "#232323",
-                    color: "#aaa",
-                    borderRadius: 8,
-                    padding: "1.5px 9px",
-                    fontWeight: 700,
-                    fontSize: 12,
-                    border: "1px solid #444",
-                    marginRight: 5,
-                  }}
-                >
-                  {t}
-                </span>
-              ))}
+
+            <div style={{ display: "grid", rowGap: 6 }}>
+              <div>
+                <b>Phone:</b>{" "}
+                {lead.phone ? (
+                  <>
+                    <a
+                      href={`tel:${safeStr(lead.phone)}`}
+                      style={{ color: "#e9edef" }}
+                      title="Call"
+                    >
+                      {lead.phone}
+                    </a>
+                    <span style={{ marginLeft: 8, display: "inline-flex", gap: 6 }}>
+                      <button
+                        onClick={() => copyToClipboard(lead.phone, "Phone copied")}
+                        style={miniBtn}
+                        title="Copy phone"
+                      >
+                        Copy
+                      </button>
+                      {whatsappHref && (
+                        <a href={whatsappHref} target="_blank" rel="noreferrer" style={miniBtnLink} title="Open WhatsApp">
+                          WhatsApp
+                        </a>
+                      )}
+                    </span>
+                  </>
+                ) : (
+                  "—"
+                )}
+              </div>
+
+              <div>
+                <b>Email:</b>{" "}
+                {lead.email ? (
+                  <>
+                    <a href={`mailto:${lead.email}`} style={{ color: "#e9edef" }} title="Email">
+                      {lead.email}
+                    </a>
+                    <button
+                      onClick={() => copyToClipboard(lead.email, "Email copied")}
+                      style={{ ...miniBtn, marginLeft: 8 }}
+                      title="Copy email"
+                    >
+                      Copy
+                    </button>
+                  </>
+                ) : (
+                  "—"
+                )}
+              </div>
+
+              <div>
+                <b>Birthday:</b> {lead.birthday || "—"}
+              </div>
+
+              <div>
+                <b>Tags:</b>{" "}
+                {(lead.tags || []).length ? (
+                  (lead.tags || []).map((t) => (
+                    <span
+                      key={t}
+                      style={{
+                        background: "#232323",
+                        color: "#aaa",
+                        borderRadius: 8,
+                        padding: "1.5px 9px",
+                        fontWeight: 700,
+                        fontSize: 12,
+                        border: "1px solid #444",
+                        marginRight: 5,
+                      }}
+                    >
+                      {t}
+                    </span>
+                  ))
+                ) : (
+                  "—"
+                )}
+              </div>
             </div>
           </div>
         )}
 
         {activeTab === "Notes" && (
           <div>
-            {updates.length === 0 && (
-              <div style={{ color: "#888", fontStyle: "italic" }}>No notes yet.</div>
-            )}
-            {updates.map((u, i) => (
-              <div
-                key={i}
-                style={{
-                  marginBottom: 10,
-                  paddingBottom: 7,
-                  borderBottom: i !== updates.length - 1 ? "1px solid #232323" : "none",
+            {/* Add note */}
+            <div
+              style={{
+                background: "#232323",
+                border: "1px solid #2f2f2f",
+                borderRadius: 10,
+                padding: 10,
+                marginBottom: 12,
+              }}
+            >
+              <textarea
+                rows={3}
+                placeholder="Add a note… (Shift+Enter for new line)"
+                value={newNote}
+                onChange={(e) => setNewNote(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    addNote();
+                  }
                 }}
-              >
-                <div style={{ fontSize: 13, color: "#999", fontWeight: 700 }}>
-                  {u.type === "note" && "Note"}
-                  {u.type === "voice" && "Voice Note"}
-                  {u.type === "ai" && "AI"}
-                  <span style={{ color: "#aaa", fontWeight: 400, marginLeft: 6 }}>
-                    {u.date ? new Date(u.date).toLocaleString() : ""}
-                  </span>
-                </div>
-                {u.type === "note" && <div style={{ color: "#eee" }}>{u.text}</div>}
-                {u.type === "voice" && (
-                  <div>
-                    <audio controls src={u.audioUrl} style={{ margin: "7px 0" }} />
-                    <div style={{ fontSize: 13, color: "#eee" }}>
-                      Transcript: {u.transcript}
-                    </div>
-                  </div>
-                )}
-                {u.type === "ai" && (
-                  <div style={{ color: "#1bc982" }}>
-                    <strong>AI Suggestion:</strong> {u.text}
-                  </div>
-                )}
+                style={{
+                  width: "100%",
+                  background: "#191919",
+                  color: "#eee",
+                  border: "1px solid #444",
+                  borderRadius: 7,
+                  padding: "8px 10px",
+                  resize: "vertical",
+                }}
+              />
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
+                <button onClick={addNote} style={primarySm}>
+                  Add Note
+                </button>
               </div>
-            ))}
+            </div>
+
+            {/* List */}
+            {updates.length === 0 ? (
+              <div style={{ color: "#888", fontStyle: "italic" }}>No notes yet.</div>
+            ) : (
+              updates.map((u, i) => (
+                <div
+                  key={`${u.type}-${u.date}-${i}`}
+                  style={{
+                    marginBottom: 10,
+                    paddingBottom: 7,
+                    borderBottom: i !== updates.length - 1 ? "1px solid #232323" : "none",
+                  }}
+                >
+                  <div style={{ fontSize: 13, color: "#999", fontWeight: 700 }}>
+                    {u.type === "note" && "Note"}
+                    {u.type === "voice" && "Voice Note"}
+                    {u.type === "ai" && "AI Suggestion"}
+                    <span style={{ color: "#aaa", fontWeight: 400, marginLeft: 6 }}>
+                      {u.date ? new Date(u.date).toLocaleString() : ""}
+                    </span>
+                    <span style={{ color: "#777", fontWeight: 400, marginLeft: 6 }}>
+                      {u.author ? `• ${u.author}` : ""}
+                    </span>
+                    <button
+                      onClick={() => removeNote(i)}
+                      title="Delete note"
+                      style={{
+                        marginLeft: "auto",
+                        background: "transparent",
+                        border: "none",
+                        color: "#e66565",
+                        fontWeight: 800,
+                        cursor: "pointer",
+                        float: "right",
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  {u.type === "note" && <div style={{ color: "#eee", whiteSpace: "pre-wrap" }}>{u.text}</div>}
+                  {u.type === "voice" && (
+                    <div>
+                      <audio controls src={u.audioUrl} style={{ margin: "7px 0" }} />
+                      <div style={{ fontSize: 13, color: "#eee" }}>Transcript: {u.transcript}</div>
+                    </div>
+                  )}
+                  {u.type === "ai" && (
+                    <div style={{ color: "#1bc982" }}>
+                      <strong>AI:</strong> {u.text}
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
           </div>
         )}
 
         {activeTab === "Reminders" && (
           <div>
-            {reminders.length === 0 && (
-              <div style={{ color: "#888" }}>No reminders yet.</div>
-            )}
+            {reminders.length === 0 && <div style={{ color: "#888" }}>No reminders yet.</div>}
+
             {reminders.map((r, i) => (
               <div
                 key={`${r.text}-${r.date}-${i}`}
@@ -463,6 +693,27 @@ export default function LeadDrawer({
             >
               Call
             </button>
+            {whatsappHref && (
+              <a
+                href={whatsappHref}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  background: "#2ad16b",
+                  color: "#232323",
+                  fontWeight: 900,
+                  border: "none",
+                  borderRadius: 8,
+                  padding: "10px 18px",
+                  fontSize: 16,
+                  cursor: "pointer",
+                  textDecoration: "none",
+                }}
+                title="Open WhatsApp"
+              >
+                WhatsApp
+              </a>
+            )}
             {showQR && (
               <div
                 style={{
@@ -527,3 +778,30 @@ export default function LeadDrawer({
     </div>
   );
 }
+
+const miniBtn = {
+  background: "#2a2a2a",
+  color: "#fff",
+  border: "1px solid #3a3a3a",
+  borderRadius: 7,
+  padding: "2px 8px",
+  fontWeight: 800,
+  fontSize: 12,
+  cursor: "pointer",
+};
+
+const miniBtnLink = {
+  ...miniBtn,
+  textDecoration: "none",
+  display: "inline-block",
+};
+
+const primarySm = {
+  background: "#f7cb53",
+  color: "#232323",
+  fontWeight: 800,
+  border: "none",
+  borderRadius: 7,
+  padding: "7px 14px",
+  cursor: "pointer",
+};

@@ -1,72 +1,211 @@
-import { useState } from "react";
+// src/components/TokenGenerator.jsx
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+// ---- API base (CRA + Vite safe) ----
+const API_BASE =
+  (typeof import.meta !== "undefined" &&
+    import.meta.env &&
+    import.meta.env.VITE_API_BASE_URL) ||
+  (typeof process !== "undefined" &&
+    process.env &&
+    process.env.REACT_APP_API_BASE) ||
+  (typeof window !== "undefined" &&
+  window.location &&
+  window.location.hostname.includes("localhost")
+    ? "http://localhost:5000"
+    : "https://retainai-app.onrender.com");
+
+// Backend endpoints (adjust paths if your server differs)
+const EXCHANGE_ENDPOINT = `${API_BASE}/api/instagram/exchange-token`; // POST { short_lived_token }
+const STORE_ENDPOINT    = `${API_BASE}/api/instagram/store-token`;   // POST { access_token, user_email? }
 
 export default function TokenGenerator() {
   const [shortToken, setShortToken] = useState("");
-  const [longToken, setLongToken] = useState("");
-  const [status, setStatus] = useState("");
+  const [longToken, setLongToken]   = useState("");
+  const [expiresIn, setExpiresIn]   = useState(null); // seconds, if returned
+  const [status, setStatus]         = useState("");
+  const [error, setError]           = useState("");
+  const [busy, setBusy]             = useState(false);
+  const [showLong, setShowLong]     = useState(false);
 
-  const handleExchange = async () => {
-    setStatus("⏳ Exchanging token...");
+  const abortRef = useRef(null);
+
+  // Pull user email for attribution (optional)
+  const userEmail = useMemo(() => {
     try {
-      const response = await fetch(
-        `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=YOUR_APP_ID&client_secret=YOUR_APP_SECRET&fb_exchange_token=${shortToken}`
-      );
-      const data = await response.json();
+      const u = JSON.parse(localStorage.getItem("user") || "null");
+      return u?.email || "";
+    } catch {
+      return "";
+    }
+  }, []);
 
-      if (data.access_token) {
-        setLongToken(data.access_token);
-        setStatus("✅ Long-lived token generated!");
+  // Basic sanity check (non-empty & not obviously placeholders)
+  const canExchange = useMemo(() => {
+    const t = (shortToken || "").trim();
+    return (
+      !!t &&
+      !t.includes("YOUR_APP_ID") &&
+      !t.includes("YOUR_APP_SECRET") &&
+      t.length > 20 && // short-lived IG tokens are long
+      !busy
+    );
+  }, [shortToken, busy]);
 
-        // Save token to backend
-        const saveRes = await fetch("http://localhost:5000/store-token", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token: data.access_token }),
-        });
+  // Helpers
+  const safeJson = async (res) => {
+    try { return await res.json(); } catch { return {}; }
+  };
 
-        const result = await saveRes.json();
-        if (!saveRes.ok) {
-          setStatus("⚠️ Token saved, but backend error.");
-        } else {
-          console.log("Saved to backend:", result);
-        }
+  const copy = async (text) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
       } else {
-        setStatus("❌ Error: " + (data.error?.message || "Unknown error"));
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
       }
-    } catch (err) {
-      console.error("Exchange failed:", err);
-      setStatus("❌ Network or server error.");
+      setStatus("📋 Copied to clipboard.");
+      setTimeout(() => setStatus(""), 1500);
+    } catch {
+      setError("Could not copy to clipboard.");
     }
   };
+
+  // Exchange via BACKEND (never expose app secret in browser)
+  const handleExchange = useCallback(async () => {
+    if (!canExchange) return;
+    setBusy(true);
+    setError("");
+    setStatus("⏳ Exchanging short-lived token…");
+
+    // cancel in-flight
+    abortRef.current?.abort?.();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const res = await fetch(EXCHANGE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(userEmail ? { "X-User-Email": userEmail } : {}) },
+        body: JSON.stringify({ short_lived_token: shortToken.trim() }),
+        signal: controller.signal,
+      });
+      const data = await safeJson(res);
+
+      if (!res.ok || !data.access_token) {
+        const msg = data.error || `Exchange failed (${res.status})`;
+        throw new Error(msg);
+      }
+
+      setLongToken(data.access_token);
+      setExpiresIn(typeof data.expires_in === "number" ? data.expires_in : null);
+      setStatus("✅ Long-lived token generated.");
+      setShowLong(false);
+
+      // Save token to backend (best-effort; non-blocking UX)
+      setStatus("💾 Saving token…");
+      const saveRes = await fetch(STORE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(userEmail ? { "X-User-Email": userEmail } : {}) },
+        body: JSON.stringify({ access_token: data.access_token, user_email: userEmail }),
+        signal: controller.signal,
+      });
+      const saveData = await safeJson(saveRes);
+      if (!saveRes.ok) {
+        setStatus("⚠️ Token generated, but saving failed.");
+        setError(saveData.error || `Store failed (${saveRes.status})`);
+      } else {
+        setStatus("✅ Token saved.");
+      }
+    } catch (e) {
+      if (e.name === "AbortError") return;
+      setError(e.message || "Network or server error.");
+      setStatus("");
+    } finally {
+      setBusy(false);
+    }
+  }, [canExchange, shortToken, userEmail]);
+
+  useEffect(() => () => abortRef.current?.abort?.(), []);
+
+  const ttlText = useMemo(() => {
+    if (!expiresIn || typeof expiresIn !== "number") return "";
+    const days = Math.floor(expiresIn / 86400);
+    const hours = Math.floor((expiresIn % 86400) / 3600);
+    return `Expires in ${days}d ${hours}h`;
+  }, [expiresIn]);
 
   return (
     <section className="bg-brand-black text-white py-12 px-6 rounded-xl shadow-lg max-w-3xl mx-auto border border-brand-gold mt-12">
       <h2 className="text-2xl font-bold mb-4 text-brand-gold text-center">🎯 Instagram Token Generator</h2>
 
+      {/* status / error */}
+      {(status || error) && (
+        <div
+          className={`mb-4 text-sm rounded p-3 ${error ? "bg-red-900/50 border border-red-500 text-red-200" : "bg-emerald-900/40 border border-emerald-500 text-emerald-200"}`}
+          role="status"
+          aria-live="polite"
+        >
+          {error || status}
+        </div>
+      )}
+
+      <label className="block text-sm text-gray-300 mb-2">Paste short-lived token</label>
       <input
         type="text"
-        placeholder="Paste short-lived token"
+        placeholder="EAAG… short-lived token"
         value={shortToken}
         onChange={(e) => setShortToken(e.target.value)}
         className="w-full p-3 rounded mb-4 text-black"
+        autoComplete="off"
+        spellCheck={false}
       />
 
       <button
         onClick={handleExchange}
-        className="bg-brand-gold text-black font-semibold px-6 py-3 rounded hover:bg-brand-goldHover transition w-full"
+        disabled={!canExchange}
+        className={`bg-brand-gold text-black font-semibold px-6 py-3 rounded transition w-full ${canExchange ? "hover:bg-brand-goldHover cursor-pointer" : "opacity-60 cursor-not-allowed"}`}
       >
-        Get Long-Lived Token
+        {busy ? "Working…" : "Get Long-Lived Token"}
       </button>
 
       {longToken && (
-        <div className="mt-4 text-sm break-words bg-gray-800 p-3 rounded text-green-300">
-          <strong>Long Token:</strong> {longToken}
+        <div className="mt-6 text-sm bg-gray-800 p-3 rounded text-green-200">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <strong className="text-green-300">Long-lived token</strong>
+            <div className="flex items-center gap-2">
+              {ttlText && <span className="text-gray-300">{ttlText}</span>}
+              <button
+                type="button"
+                onClick={() => setShowLong((s) => !s)}
+                className="px-2 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600"
+              >
+                {showLong ? "Hide" : "Show"}
+              </button>
+              <button
+                type="button"
+                onClick={() => copy(longToken)}
+                className="px-2 py-1 text-xs rounded bg-gray-700 hover:bg-gray-600"
+              >
+                Copy
+              </button>
+            </div>
+          </div>
+
+          <div className="break-words select-all">
+            {showLong ? longToken : "•".repeat(Math.min(24, longToken.length)) + "  (hidden)"}
+          </div>
         </div>
       )}
 
-      {status && (
-        <p className="mt-4 text-sm text-gray-300">{status}</p>
-      )}
+      <p className="mt-4 text-xs text-gray-400 leading-relaxed">
+        For security, the exchange is performed on your server (never expose your Facebook App Secret in the browser).
+      </p>
     </section>
   );
 }

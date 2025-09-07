@@ -1,12 +1,19 @@
 // File: src/components/Settings.jsx
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { useLocation } from "react-router-dom";
 import GoogleCalendarEvents from "./GoogleCalendarEvents";
 import StripeConnectCard from "./StripeConnectCard";
-// WhatsApp card removed per request
 import { FaUser, FaPlug, FaQuestionCircle, FaUsers, FaSearch, FaTrash } from "react-icons/fa";
 import { SiInstagram } from "react-icons/si";
 import "./settings.css";
+
+/* ---------- ENV & UTILS (CRA + Vite) ---------- */
+const API_BASE =
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_BASE_URL) ||
+  (typeof process !== "undefined" && process.env && process.env.REACT_APP_API_BASE) ||
+  (typeof window !== "undefined" && window.location && window.location.hostname.includes("localhost")
+    ? "http://localhost:5000"
+    : "https://retainai-app.onrender.com");
 
 const TABS = [
   { key: "profile",      label: "Profile",        icon: <FaUser /> },
@@ -15,6 +22,14 @@ const TABS = [
   { key: "help",         label: "Help & Support", icon: <FaQuestionCircle /> },
 ];
 
+function safeParseJSON(res) {
+  return res
+    .text()
+    .then((t) => (t ? JSON.parse(t) : {}))
+    .catch(() => ({}));
+}
+
+/* ---------- MAIN ---------- */
 export default function Settings({
   user,
   sidebarCollapsed,
@@ -25,67 +40,92 @@ export default function Settings({
   initialTab,
 }) {
   const { search } = useLocation();
-  const [tab, setTab] = useState(initialTab || "profile");
+  const [tab, setTab] = useState(initialTab && TABS.some(t => t.key === initialTab) ? initialTab : "profile");
   const [profile, setProfile] = useState(null);
-  const [form, setForm] = useState({
-    name: "", email: "", business: "", type: "", location: "", teamSize: ""
-  });
+  const [form, setForm] = useState({ name: "", email: "", business: "", type: "", location: "", teamSize: "" });
   const [editMode, setEditMode] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const initialFormRef = useRef(form);
 
+  // keep tab in sync if prop changes later
   useEffect(() => {
     if (initialTab && TABS.some(t => t.key === initialTab)) setTab(initialTab);
   }, [initialTab]);
 
+  // Load profile
   const loadProfile = () => {
     if (!user?.email) return;
-    fetch(`/api/user/${encodeURIComponent(user.email)}`)
-      .then(res => res.ok ? res.json() : Promise.reject(res.statusText))
-      .then(data => {
-        setProfile(data);
-        setForm({
+    const ac = new AbortController();
+    setError("");
+    fetch(`${API_BASE}/api/user/${encodeURIComponent(user.email)}`, { signal: ac.signal })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await safeParseJSON(res);
+        const next = {
           name: data.name || "",
           email: data.email || "",
           business: data.business || "",
           type: data.businessType || "",
           location: data.location || "",
-          teamSize: data.people || ""
-        });
-        localStorage.setItem("user", JSON.stringify(data));
+          teamSize: data.people || "",
+          logo: data.logo || ""
+        };
+        setProfile(data);
+        setForm(next);
+        initialFormRef.current = next;
+        try { localStorage.setItem("user", JSON.stringify(data)); } catch {}
       })
-      .catch(err => console.error("Failed to load profile:", err));
+      .catch((e) => {
+        if (e.name !== "AbortError") setError("Failed to load profile.");
+      });
+    return () => ac.abort();
   };
-  useEffect(loadProfile, [user?.email]);
+  useEffect(loadProfile, [user?.email]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Refresh after Stripe connect redirects back
   useEffect(() => {
     const params = new URLSearchParams(search);
     if (params.get("stripe_connected") === "1") loadProfile();
-  }, [search, user?.email]);
+  }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const dirty = useMemo(() => {
+    const a = initialFormRef.current;
+    const b = form;
+    return (
+      a.name !== b.name ||
+      a.email !== b.email || // email is disabled; still compare for safety
+      a.business !== b.business ||
+      a.type !== b.type ||
+      a.location !== b.location ||
+      String(a.teamSize || "") !== String(b.teamSize || "")
+    );
+  }, [form]);
 
   const handleSave = async () => {
     setSaving(true);
+    setError("");
     try {
-      const res = await fetch("/api/oauth/google/complete", {
+      // Use existing backend profile save path you already have in place
+      const res = await fetch(`${API_BASE}/api/oauth/google/complete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email: form.email,
+          email: form.email, // immutable on UI but sent to backend
           name: form.name,
-          logo: profile.logo || "",
+          logo: profile?.logo || "",
           businessType: form.type,
           businessName: form.business,
-          people: form.teamSize
+          people: form.teamSize,
+          location: form.location,
         }),
       });
-      const data = await res.json();
-      if (data.user) {
-        await loadProfile();
-        setEditMode(false);
-      } else {
-        console.error("Save error:", data.error);
-      }
+      const data = await safeParseJSON(res);
+      if (!res.ok || !data.user) throw new Error(data.error || `HTTP ${res.status}`);
+      await loadProfile();
+      setEditMode(false);
     } catch (e) {
-      console.error("Failed to save profile:", e);
+      setError(e.message || "Failed to save profile.");
     } finally {
       setSaving(false);
     }
@@ -93,12 +133,12 @@ export default function Settings({
 
   const leftOffset = sidebarCollapsed ? 60 : 245;
   const settingsWidth = `calc(100vw - ${leftOffset}px)`;
-  const MAX_W = 1000; // shared center width
+  const MAX_W = 1000;
 
   if (!profile) {
     return (
       <div className="settings-layout" style={{ left: leftOffset, width: settingsWidth }}>
-        Loading…
+        <div className="settings-loading">Loading…</div>
       </div>
     );
   }
@@ -110,7 +150,8 @@ export default function Settings({
           <button
             key={t.key}
             className={tab === t.key ? "active" : ""}
-            onClick={() => { setTab(t.key); setEditMode(false); }}
+            onClick={() => { setTab(t.key); setEditMode(false); setError(""); }}
+            type="button"
           >
             <span className="settings-icon">{t.icon}</span>
             <span className="settings-label">{t.label}</span>
@@ -119,14 +160,34 @@ export default function Settings({
       </nav>
 
       <main className="settings-content fade-in">
-        {/* PROFILE (centered) */}
+        {/* PROFILE */}
         {tab === "profile" && (
           <div className="profile-tab" style={{ maxWidth: MAX_W, margin: "0 auto" }}>
             <h2>Profile</h2>
-            <div className="profile-card">
-              <div className="avatar">
-                {profile.logo ? <img src={profile.logo} alt="logo" /> : (profile.name?.[0]?.toUpperCase() || "?")}
+
+            {error && (
+              <div className="settings-alert settings-alert-error">
+                {error}
               </div>
+            )}
+
+            <div className="profile-card">
+              <div className="avatar" aria-label="Account logo">
+                {profile.logo ? (
+                  <img
+                    src={profile.logo}
+                    alt="logo"
+                    onError={(e) => {
+                      e.currentTarget.src = "";
+                      e.currentTarget.alt = " ";
+                      e.currentTarget.style.display = "none";
+                    }}
+                  />
+                ) : (
+                  (profile.name?.[0]?.toUpperCase() || "?")
+                )}
+              </div>
+
               <div className="profile-fields">
                 {[
                   { label: "Name",      name: "name"     },
@@ -141,7 +202,7 @@ export default function Settings({
                     {editMode ? (
                       <input
                         className="field-input"
-                        type="text"
+                        type={name === "teamSize" ? "number" : "text"}
                         value={form[name]}
                         onChange={e => setForm(f => ({ ...f, [name]: e.target.value }))}
                         disabled={name === "email"}
@@ -157,17 +218,24 @@ export default function Settings({
                     <>
                       <button
                         className="btn btn-cancel"
-                        onClick={() => { setEditMode(false); loadProfile(); }}
+                        onClick={() => { setEditMode(false); setForm(initialFormRef.current); setError(""); }}
                         disabled={saving}
+                        type="button"
                       >
                         Cancel
                       </button>
-                      <button className="btn btn-save" onClick={handleSave} disabled={saving}>
+                      <button
+                        className="btn btn-save"
+                        onClick={handleSave}
+                        disabled={saving || !dirty}
+                        type="button"
+                        title={!dirty ? "No changes to save" : undefined}
+                      >
                         {saving ? "Saving…" : "Save"}
                       </button>
                     </>
                   ) : (
-                    <button className="btn btn-edit" onClick={() => setEditMode(true)}>
+                    <button className="btn btn-edit" onClick={() => setEditMode(true)} type="button">
                       Edit Profile
                     </button>
                   )}
@@ -177,12 +245,12 @@ export default function Settings({
           </div>
         )}
 
-        {/* TEAM (centered, no invite UI) */}
+        {/* TEAM */}
         {tab === "team" && (
           <TeamTab ownerEmail={profile.email} maxWidth={MAX_W} />
         )}
 
-        {/* INTEGRATIONS (centered) */}
+        {/* INTEGRATIONS */}
         {tab === "integrations" && (
           <div style={{ maxWidth: MAX_W, margin: "0 auto" }}>
             <h2>Integrations</h2>
@@ -208,7 +276,7 @@ export default function Settings({
           </div>
         )}
 
-        {/* HELP & SUPPORT (centered) */}
+        {/* HELP */}
         {tab === "help" && (
           <div style={{ maxWidth: MAX_W, margin: "0 auto" }}>
             <h2>Help & Support</h2>
@@ -234,25 +302,35 @@ function TeamTab({ ownerEmail, maxWidth }) {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [busyEmail, setBusyEmail] = useState("");
+  const [error, setError] = useState("");
 
   const roles = ["owner", "manager", "member"];
 
   const loadMembers = async () => {
+    if (!ownerEmail) return;
     setLoading(true);
+    setError("");
+    const ac = new AbortController();
     try {
-      const res = await fetch("/api/team/members", {
-        headers: { "X-User-Email": ownerEmail }
+      const res = await fetch(`${API_BASE}/api/team/members`, {
+        headers: { "X-User-Email": ownerEmail },
+        signal: ac.signal,
       });
-      const data = await res.json();
-      if (data.members) setMembers(data.members);
+      const data = await safeParseJSON(res);
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setMembers(Array.isArray(data.members) ? data.members : []);
     } catch (e) {
-      console.error(e);
+      if (e.name !== "AbortError") {
+        setError("Failed to load team members.");
+        setMembers([]);
+      }
     } finally {
       setLoading(false);
     }
+    return () => ac.abort();
   };
 
-  useEffect(() => { if (ownerEmail) loadMembers(); }, [ownerEmail]);
+  useEffect(() => { loadMembers(); /* eslint-disable-next-line */ }, [ownerEmail]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -266,17 +344,19 @@ function TeamTab({ ownerEmail, maxWidth }) {
 
   const changeRole = async (email, role) => {
     setBusyEmail(email);
+    setError("");
+    const prev = members;
     setMembers(ms => ms.map(m => (m.email === email ? { ...m, role } : m)));
     try {
-      const res = await fetch("/api/team/role", {
+      const res = await fetch(`${API_BASE}/api/team/role`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-User-Email": ownerEmail },
         body: JSON.stringify({ email, role })
       });
       if (!res.ok) throw new Error("Role update failed");
     } catch (e) {
-      alert("Could not change role. Add /api/team/role on backend if missing.");
-      loadMembers();
+      setError("Could not change role. Ensure /api/team/role exists on backend.");
+      setMembers(prev);
     } finally {
       setBusyEmail("");
     }
@@ -285,17 +365,18 @@ function TeamTab({ ownerEmail, maxWidth }) {
   const removeMember = async (email) => {
     if (!window.confirm("Remove this member?")) return;
     setBusyEmail(email);
+    setError("");
     const prev = members;
     setMembers(ms => ms.filter(m => m.email !== email));
     try {
-      const res = await fetch("/api/team/remove", {
+      const res = await fetch(`${API_BASE}/api/team/remove`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-User-Email": ownerEmail },
         body: JSON.stringify({ email })
       });
       if (!res.ok) throw new Error("Remove failed");
     } catch (e) {
-      alert("Could not remove. Add /api/team/remove on backend if missing.");
+      setError("Could not remove. Ensure /api/team/remove exists on backend.");
       setMembers(prev);
     } finally {
       setBusyEmail("");
@@ -317,11 +398,13 @@ function TeamTab({ ownerEmail, maxWidth }) {
           width: "100%"
         }}
       >
-        <div style={{
-          display: "flex", alignItems: "center", gap: 8,
-          background: "#232325", borderRadius: 10,
-          padding: "10px 12px", border: "1px solid #2c2c2f", flex: 1
-        }}>
+        <div
+          style={{
+            display: "flex", alignItems: "center", gap: 8,
+            background: "#232325", borderRadius: 10,
+            padding: "10px 12px", border: "1px solid #2c2c2f", flex: 1
+          }}
+        >
           <FaSearch style={{ color: "#aaa" }} />
           <input
             placeholder="Search by name, email, or role…"
@@ -334,10 +417,17 @@ function TeamTab({ ownerEmail, maxWidth }) {
           className="btn"
           onClick={loadMembers}
           style={{ background: "#232323", color: "#fff", border: "1px solid #444" }}
+          type="button"
         >
           Refresh
         </button>
       </div>
+
+      {error && (
+        <div className="settings-alert settings-alert-error" style={{ maxWidth: maxWidth, margin: "0 auto 12px" }}>
+          {error}
+        </div>
+      )}
 
       {/* Members table */}
       <div
@@ -424,6 +514,7 @@ function TeamTab({ ownerEmail, maxWidth }) {
                     alignItems: "center",
                     gap: 8
                   }}
+                  type="button"
                 >
                   <FaTrash />
                   Remove

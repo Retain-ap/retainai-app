@@ -1,5 +1,6 @@
 // src/components/Calendar.jsx
 import React, { useEffect, useMemo, useState } from "react";
+import { API_BASE } from "../config";
 
 /* === THEME (aligned with Analytics) === */
 const BG = "#181a1b";
@@ -272,7 +273,7 @@ export default function Calendar({
   selectedDate,
   setSelectedDate
 }) {
-  const API = process.env.REACT_APP_API_URL;
+  const API = API_BASE;
   const today = new Date();
   const [month, setMonth] = useState(today.getMonth());
   const [year, setYear] = useState(today.getFullYear());
@@ -292,7 +293,14 @@ export default function Calendar({
   const fetchAppointments = async () => {
     if (!API || !user?.email) return;
     try {
-      const r = await fetch(`${API}/api/appointments/${encodeURIComponent(user.email)}`);
+      const r = await fetch(
+        `${API}/api/appointments/${encodeURIComponent(user.email)}`,
+        {
+          credentials: "include",
+          mode: "cors",
+          headers: { Accept: "application/json" }
+        }
+      );
       const j = await r.json();
       setAppointments(Array.isArray(j?.appointments) ? j.appointments : []);
     } catch {

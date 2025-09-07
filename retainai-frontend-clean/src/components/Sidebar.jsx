@@ -1,5 +1,5 @@
-// src/components/Sidebar.jsx
-import React, { useEffect, useState, useCallback } from "react";
+// File: src/components/Sidebar.jsx
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import "./Sidebar.css";
 import {
   FaCalendarAlt,
@@ -16,7 +16,7 @@ import {
   FaUserPlus,
 } from "react-icons/fa";
 import defaultAvatar from "../assets/default-avatar.png";
-import { promptInstall, canPromptInstall } from "../index"; // <- use helpers
+import { promptInstall, canPromptInstall } from "../index"; // relies on your PWA helpers
 
 export default function Sidebar({
   logo,
@@ -31,13 +31,28 @@ export default function Sidebar({
 }) {
   const [profileOpen, setProfileOpen] = useState(false);
 
-  // Detect PWA state & listen for install-available event from index.js
-  const [installReady, setInstallReady] = useState(canPromptInstall());
-  const isStandalone =
-    window.matchMedia?.("(display-mode: standalone)")?.matches ||
-    window.navigator.standalone === true;
-  const isiOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  // SSR-safe env checks
+  const [installReady, setInstallReady] = useState(false);
+  const [isStandalone, setIsStandalone] = useState(false);
+  const [isiOS, setIsiOS] = useState(false);
 
+  // compute at runtime (no window access during SSR)
+  useEffect(() => {
+    try {
+      setInstallReady(Boolean(canPromptInstall?.()));
+    } catch {}
+    try {
+      const standalone =
+        window.matchMedia?.("(display-mode: standalone)")?.matches ||
+        window.navigator.standalone === true;
+      setIsStandalone(Boolean(standalone));
+    } catch {}
+    try {
+      setIsiOS(/iphone|ipad|ipod/i.test(navigator.userAgent));
+    } catch {}
+  }, []);
+
+  // listen for install-available event broadcast by your index.js
   useEffect(() => {
     const onAvail = () => setInstallReady(true);
     const onInstalled = () => setInstallReady(false);
@@ -48,6 +63,26 @@ export default function Sidebar({
       window.removeEventListener("appinstalled", onInstalled);
     };
   }, []);
+
+  // close profile card on outside click / Esc
+  const cardRef = useRef(null);
+  useEffect(() => {
+    if (!profileOpen) return;
+    const handleDocClick = (e) => {
+      if (cardRef.current && !cardRef.current.contains(e.target)) {
+        setProfileOpen(false);
+      }
+    };
+    const handleEsc = (e) => {
+      if (e.key === "Escape") setProfileOpen(false);
+    };
+    document.addEventListener("mousedown", handleDocClick);
+    document.addEventListener("keydown", handleEsc);
+    return () => {
+      document.removeEventListener("mousedown", handleDocClick);
+      document.removeEventListener("keydown", handleEsc);
+    };
+  }, [profileOpen]);
 
   const handleAddToDesktop = useCallback(
     async (e) => {
@@ -61,14 +96,14 @@ export default function Sidebar({
         alert("On iOS: open in Safari, then Share → Add to Home Screen.");
         return;
       }
-      if (!canPromptInstall()) {
+      if (!canPromptInstall?.()) {
         alert("Install prompt isn’t available yet. Refresh once, then try again.");
         return;
       }
       try {
-        const { outcome } = await promptInstall(); // "accepted" | "dismissed"
+        const { outcome } = await promptInstall();
         if (outcome === "accepted") {
-          // optional toast/log
+          // Optional: toast/log
         }
       } catch (err) {
         console.warn("[PWA] install prompt error:", err);
@@ -78,32 +113,38 @@ export default function Sidebar({
   );
 
   const userLogo = user?.logo || logo || defaultAvatar;
-  const initials = user?.name
-    ? user.name
+  const initials =
+    (user?.name &&
+      user.name
         .split(" ")
         .filter(Boolean)
         .map((w) => w[0])
         .join("")
-        .toUpperCase()
-    : user?.email
-    ? user.email[0].toUpperCase()
-    : "U";
+        .toUpperCase()) ||
+    (user?.email ? user.email[0].toUpperCase() : "U");
 
   const displayName =
     user?.name && user.name.trim() !== "" ? user.name : user?.email;
 
-  // ----- NEW: brand, type, and role logic -----
   const brand =
     user?.business || user?.businessName || user?.lineOfBusiness || "Your Business";
   const businessType = (user?.businessType || "").trim();
-
-  // If user.role is set, use it. Otherwise:
-  // - Owner if not invited (first/solo account)
-  // - Team member if invited_by/created_by exists
   const role =
     (user?.role && String(user.role)) ||
     (user?.invited_by || user?.invitedBy || user?.created_by ? "Team member" : "Owner");
-  // --------------------------------------------
+
+  // nav helper
+  const NavBtn = ({ target, icon, label }) => (
+    <button
+      type="button"
+      className={section === target ? "active" : ""}
+      onClick={() => setSection(target)}
+      aria-current={section === target ? "page" : undefined}
+      aria-label={label}
+    >
+      {icon} {!collapsed && label}
+    </button>
+  );
 
   return (
     <aside className={`sidebar${collapsed ? " collapsed" : ""}`}>
@@ -116,17 +157,37 @@ export default function Sidebar({
         {collapsed ? <FaChevronRight /> : <FaChevronLeft />}
       </button>
 
+      {/* Profile header */}
       <div
         className="sidebar-profile"
+        role="button"
+        tabIndex={0}
+        aria-haspopup="dialog"
+        aria-expanded={profileOpen}
         onClick={() => setProfileOpen((o) => !o)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setProfileOpen((o) => !o);
+          }
+        }}
       >
         {userLogo ? (
-          <img src={userLogo} alt="Profile" className="sidebar-avatar" />
+          <img
+            src={userLogo}
+            alt="Profile"
+            className="sidebar-avatar"
+            onError={(e) => {
+              e.currentTarget.onerror = null;
+              e.currentTarget.src = defaultAvatar;
+            }}
+          />
         ) : (
           <div className="sidebar-avatar-initials" aria-hidden>
             {initials}
           </div>
         )}
+
         {!collapsed && (
           <div className="sidebar-profile-info">
             <div className="sidebar-profile-name">{displayName}</div>
@@ -138,14 +199,15 @@ export default function Sidebar({
 
         {profileOpen && !collapsed && (
           <div
+            ref={cardRef}
             className="sidebar-dropdown-card"
             role="dialog"
-            onClick={(e) => e.stopPropagation()} // keep it open while clicking inside
+            aria-label="Profile menu"
+            onClick={(e) => e.stopPropagation()}
           >
             <div className="dropdown-header">
               <div className="dropdown-title">{displayName}</div>
               <div className="dropdown-email">{user?.email}</div>
-              {/* Brand + type shown in header for quick context */}
               <div className="dropdown-brand">
                 {brand}
                 {businessType ? ` — ${businessType}` : ""}
@@ -158,9 +220,7 @@ export default function Sidebar({
             </div>
             <div className="dropdown-row">
               <span className="dropdown-label">Business</span>
-              <span className="dropdown-value">
-                {businessType || "Not set"}
-              </span>
+              <span className="dropdown-value">{businessType || "Not set"} </span>
             </div>
 
             <button
@@ -190,63 +250,19 @@ export default function Sidebar({
       </div>
 
       {/* Nav */}
-      <nav className="sidebar-nav">
-        <button
-          type="button"
-          className={section === "dashboard" ? "active" : ""}
-          onClick={() => setSection("dashboard")}
-        >
-          <FaUsers /> {!collapsed && "Dashboard"}
-        </button>
-        <button
-          type="button"
-          className={section === "analytics" ? "active" : ""}
-          onClick={() => setSection("analytics")}
-        >
-          <FaChartBar /> {!collapsed && "Analytics"}
-        </button>
-        <button
-          type="button"
-          className={section === "calendar" ? "active" : ""}
-          onClick={() => setSection("calendar")}
-        >
-          <FaCalendarAlt /> {!collapsed && "Calendar"}
-        </button>
-        <button
-          type="button"
-          className={section === "messages" ? "active" : ""}
-          onClick={() => setSection("messages")}
-        >
-          <FaEnvelopeOpenText /> {!collapsed && "Messages"}
-        </button>
-        <button
-          type="button"
-          className={section === "notifications" ? "active" : ""}
-          onClick={() => setSection("notifications")}
-        >
-          <FaBell /> {!collapsed && "Notifications"}
-        </button>
-        <button
-          type="button"
-          className={section === "automations" ? "active" : ""}
-          onClick={() => setSection("automations")}
-        >
-          <FaRobot /> {!collapsed && "Automations"}
-        </button>
-        <button
-          type="button"
-          className={section === "ai-prompts" ? "active" : ""}
-          onClick={() => setSection("ai-prompts")}
-        >
-          <FaRobot /> {!collapsed && "AI Prompts"}
-        </button>
-        <button
-          type="button"
-          className={section === "invoices" ? "active" : ""}
-          onClick={() => setSection("invoices")}
-        >
-          <FaFileInvoiceDollar /> {!collapsed && "Invoices"}
-        </button>
+      <nav className="sidebar-nav" aria-label="Primary">
+        <NavBtn target="dashboard" icon={<FaUsers />} label="Dashboard" />
+        <NavBtn target="analytics" icon={<FaChartBar />} label="Analytics" />
+        <NavBtn target="calendar" icon={<FaCalendarAlt />} label="Calendar" />
+        <NavBtn target="messages" icon={<FaEnvelopeOpenText />} label="Messages" />
+        <NavBtn target="notifications" icon={<FaBell />} label="Notifications" />
+        <NavBtn target="automations" icon={<FaRobot />} label="Automations" />
+        <NavBtn target="ai-prompts" icon={<FaRobot />} label="AI Prompts" />
+        <NavBtn
+          target="invoices"
+          icon={<FaFileInvoiceDollar />}
+          label="Invoices"
+        />
       </nav>
 
       {/* Invite Team */}

@@ -1,3 +1,4 @@
+// src/components/Analytics.jsx
 import React, { useMemo } from "react";
 import {
   FunnelChart, Funnel, LabelList,
@@ -20,11 +21,22 @@ const N1 = "#cfd5db"; // light
 const N2 = "#8b949e"; // mid
 const N3 = "#495056"; // dark
 
+/* ===== UTILITIES ===== */
+const MS_DAY = 86400000;
+const toDate = (v) => {
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isFinite(d.getTime()) ? d : null;
+};
+const monthStr = (v) => (toDate(v) || new Date()).toISOString().slice(0, 7);
+const safeLastContact = (l) =>
+  toDate(l?.last_contacted) || toDate(l?.lastContacted) || toDate(l?.createdAt) || new Date();
+
 /* ===== DATA HELPERS ===== */
 function getConversionStats(leads = []) {
   const total = leads.length;
-  const contacted = leads.filter(l => !!l.last_contacted || !!l.lastContacted).length;
-  const appointment = leads.filter(l => (l.appointments || []).length > 0).length;
+  const contacted = leads.filter(l => !!(l.last_contacted || l.lastContacted)).length;
+  const appointment = leads.filter(l => Array.isArray(l.appointments) && l.appointments.length > 0).length;
   const closed = leads.filter(l => (l.tags || []).some(t => ["Closed", "Won", "Completed"].includes(t))).length;
   return [
     { stage: "Total Leads", value: total },
@@ -34,18 +46,18 @@ function getConversionStats(leads = []) {
   ];
 }
 function getFunnelRates(stats) {
-  let out = [];
-  for (let i = 1; i < stats.length; ++i) {
-    const prev = stats[i - 1].value;
-    const curr = stats[i].value;
+  const out = [];
+  for (let i = 1; i < stats.length; i++) {
+    const prev = stats[i - 1].value || 0;
+    const curr = stats[i].value || 0;
     out.push(prev === 0 ? 0 : Math.round((curr / prev) * 100));
   }
   return out;
 }
 function getSentimentByMonth(leads = []) {
-  let map = {};
+  const map = {};
   leads.forEach(l => {
-    const m = (l.last_contacted || l.lastContacted || l.createdAt || "").slice(0, 7);
+    const m = monthStr(l?.last_contacted || l?.lastContacted || l?.createdAt);
     const tag = (l.tags || []).find(t => ["Happy", "Upset", "Neutral"].includes(t)) || "Neutral";
     if (!map[m]) map[m] = { month: m, Happy: 0, Upset: 0, Neutral: 0 };
     map[m][tag]++;
@@ -53,10 +65,10 @@ function getSentimentByMonth(leads = []) {
   return Object.values(map).sort((a, b) => a.month.localeCompare(b.month));
 }
 function getSourceBreakdown(leads = []) {
-  let counts = {};
-  const PALETTE = [GOLD, N1, N2, N3, "#343a40", "#5a626a"]; // gold + grays
+  const counts = {};
+  const PALETTE = [GOLD, N1, N2, N3, "#343a40", "#5a626a"];
   leads.forEach(l => {
-    const src = l.source || "Other";
+    const src = l?.source || "Other";
     counts[src] = (counts[src] || 0) + 1;
   });
   return Object.entries(counts).map(([name, value], i) => ({
@@ -67,19 +79,17 @@ function getVipLeads(leads = []) {
   return leads.filter(l => (l.tags || []).includes("VIP"));
 }
 function daysBetween(a, b) {
-  return Math.floor((a.getTime() - b.getTime()) / 86400000);
+  const ms = Math.max(0, (a.getTime() - b.getTime()));
+  return Math.floor(ms / MS_DAY);
 }
 function getColdLeads(leads = [], days = 14) {
-  const now = Date.now();
-  return leads.filter(l => {
-    const dt = new Date(l.last_contacted || l.lastContacted || l.createdAt || Date.now());
-    return (now - dt.getTime()) > days * 86400000;
-  });
+  const now = new Date();
+  return leads.filter(l => daysBetween(now, safeLastContact(l)) > days);
 }
 function getAITip(leads = []) {
   const coldVIPs = leads.filter(l =>
     (l.tags || []).includes("VIP") &&
-    (!l.last_contacted || Date.now() - new Date(l.last_contacted).getTime() > 10 * 86400000)
+    daysBetween(new Date(), toDate(l?.last_contacted) || new Date(0)) > 10
   );
   if (coldVIPs.length)
     return `You have ${coldVIPs.length} VIP${coldVIPs.length > 1 ? "s" : ""} who need follow-up this week!`;
@@ -87,41 +97,36 @@ function getAITip(leads = []) {
 }
 function getNextAction(leads = []) {
   const cold = getColdLeads(leads);
-  if (cold.length) return `Reach out to ${cold[0].name} – it's been a while!`;
+  if (cold.length) return `Reach out to ${cold[0].name || cold[0].email} – it's been a while!`;
   return "No leads are at risk. Well managed!";
 }
 function getRemindersDue(leads = [], days = 7) {
   const now = new Date();
-  const inDays = new Date(now.getTime() + days * 86400000);
+  const inDays = new Date(now.getTime() + days * MS_DAY);
   let count = 0;
   leads.forEach(lead => {
     (lead.reminders || []).forEach(r => {
-      if (r.date) {
-        const d = new Date(r.date);
-        if (d >= now && d <= inDays) count++;
-      }
+      const d = toDate(r?.date);
+      if (d && d >= now && d <= inDays) count++;
     });
   });
   return count;
 }
 function getAppointmentsThisMonth(leads = []) {
   const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth();
+  const y = now.getFullYear(), m = now.getMonth();
   let count = 0;
   leads.forEach(lead => {
     (lead.appointments || []).forEach(a => {
-      if (a.date) {
-        const d = new Date(a.date);
-        if (d.getFullYear() === year && d.getMonth() === month) count++;
-      }
+      const d = toDate(a?.date);
+      if (d && d.getFullYear() === y && d.getMonth() === m) count++;
     });
   });
   return count;
 }
 function getLeaderboard(leads = []) {
-  let arr = leads.map(l => ({
-    name: l.name,
+  const arr = leads.map(l => ({
+    name: l?.name || l?.email || "Unknown",
     count: (l.appointments || []).length
   }));
   arr.sort((a, b) => b.count - a.count);
@@ -132,17 +137,16 @@ function getLeaderboard(leads = []) {
 function getLeadsByMonth(leads = []) {
   const map = {};
   leads.forEach(l => {
-    const m = (l.createdAt || "").slice(0, 7) || new Date().toISOString().slice(0, 7);
+    const m = monthStr(l?.createdAt);
     map[m] = (map[m] || 0) + 1;
   });
   return Object.keys(map).sort().map(month => ({ month, count: map[month] }));
 }
 function getAvgDaysSinceContact(leads = []) {
   const now = new Date();
-  const diffs = leads.map(l => {
-    const last = l.last_contacted || l.lastContacted || l.createdAt;
-    return last ? daysBetween(now, new Date(last)) : daysBetween(now, new Date());
-  }).filter(n => Number.isFinite(n));
+  const diffs = leads
+    .map(l => daysBetween(now, safeLastContact(l)))
+    .filter(n => Number.isFinite(n));
   if (!diffs.length) return 0;
   return Math.round(diffs.reduce((a, b) => a + b, 0) / diffs.length);
 }
@@ -159,15 +163,14 @@ function getTopTags(leads = [], limit = 8) {
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const HOURS = Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, "0")}:00`);
 function getHeatmapMatrix(leads = []) {
-  const matrix = Array(7).fill(0).map(() => Array(24).fill(0));
+  const matrix = Array.from({ length: 7 }, () => Array(24).fill(0));
   leads.forEach(lead => {
     (lead.appointments || []).forEach(app => {
-      if (app.date && app.time) {
-        const d = new Date(`${app.date}T${app.time}`);
-        const day = d.getDay();
-        const hour = d.getHours();
-        if (day >= 0 && day <= 6 && hour >= 0 && hour < 24) matrix[day][hour]++;
-      }
+      const d = (app?.date && app?.time) ? toDate(`${app.date}T${app.time}`) : null;
+      if (!d) return;
+      const day = d.getDay();
+      const hour = d.getHours();
+      if (day >= 0 && day <= 6 && hour >= 0 && hour < 24) matrix[day][hour]++;
     });
   });
   return matrix;
@@ -259,18 +262,18 @@ const renderPieLabel = ({ cx, cy, midAngle, outerRadius, percent, name }) => {
 };
 
 export default function Analytics({ leads = [] }) {
-  const funnelStats = useMemo(() => getConversionStats(leads), [leads]);
-  const funnelRates = getFunnelRates(funnelStats);
-  const sentimentData = useMemo(() => getSentimentByMonth(leads), [leads]);
-  const sourceData = useMemo(() => getSourceBreakdown(leads), [leads]);
-  const vipLeads = getVipLeads(leads);
-  const coldLeads = getColdLeads(leads);
-  const remindersDue = useMemo(() => getRemindersDue(leads, 7), [leads]);
-  const apptsThisMonth = useMemo(() => getAppointmentsThisMonth(leads), [leads]);
-  const leadsByMonth = useMemo(() => getLeadsByMonth(leads), [leads]);
-  const avgDaysSinceContact = useMemo(() => getAvgDaysSinceContact(leads), [leads]);
-  const leaderboard = useMemo(() => getLeaderboard(leads), [leads]);
-  const topTags = useMemo(() => getTopTags(leads), [leads]);
+  const funnelStats           = useMemo(() => getConversionStats(leads), [leads]);
+  const funnelRates           = getFunnelRates(funnelStats);
+  const sentimentData         = useMemo(() => getSentimentByMonth(leads), [leads]);
+  const sourceData            = useMemo(() => getSourceBreakdown(leads), [leads]);
+  const vipLeads              = useMemo(() => getVipLeads(leads), [leads]);
+  const coldLeads             = useMemo(() => getColdLeads(leads), [leads]);
+  const remindersDue          = useMemo(() => getRemindersDue(leads, 7), [leads]);
+  const apptsThisMonth        = useMemo(() => getAppointmentsThisMonth(leads), [leads]);
+  const leadsByMonth          = useMemo(() => getLeadsByMonth(leads), [leads]);
+  const avgDaysSinceContact   = useMemo(() => getAvgDaysSinceContact(leads), [leads]);
+  const leaderboard           = useMemo(() => getLeaderboard(leads), [leads]);
+  const topTags               = useMemo(() => getTopTags(leads), [leads]);
 
   return (
     <div style={{ padding: 28, background: BG, minHeight: "100vh", boxSizing: "border-box" }}>
@@ -342,11 +345,7 @@ export default function Analytics({ leads = [] }) {
                 align="center"
                 iconType="circle"
                 iconSize={10}
-                wrapperStyle={{
-                  color: TEXT,
-                  marginTop: 36,
-                  lineHeight: "16px"
-                }}
+                wrapperStyle={{ color: TEXT, marginTop: 36, lineHeight: "16px" }}
               />
             </PieChart>
           </ResponsiveContainer>
@@ -399,7 +398,7 @@ export default function Analytics({ leads = [] }) {
               <div style={{ color: SUBTEXT, fontWeight: 700 }}>No leads yet.</div>
             ) : (
               leaderboard.map((l, i) => (
-                <div key={l.name} style={{ fontWeight: 900, color: TEXT, marginBottom: 10, display: "flex", alignItems: "center", lineHeight: 1.2 }}>
+                <div key={`${l.name}-${i}`} style={{ fontWeight: 900, color: TEXT, marginBottom: 10, display: "flex", alignItems: "center", lineHeight: 1.2 }}>
                   <span style={{ color: GOLD, marginRight: 10 }}>{i + 1}.</span>
                   <div style={{ flex: 1 }}>{l.name}</div>
                   {l.count > 0 && <span style={goldChip}>{l.count} appt</span>}

@@ -1,4 +1,4 @@
-// src/components/Signup.jsx
+// File: src/components/Signup.jsx
 import React, { useMemo, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { GoogleLogin } from "@react-oauth/google";
@@ -17,18 +17,67 @@ const BG = {
   text80: "rgba(255,255,255,.80)",
 };
 
+// ---- API base (CRA + Vite safe, trimmed) ----
+const RAW_API_BASE =
+  (typeof import.meta !== "undefined" &&
+    import.meta.env &&
+    import.meta.env.VITE_API_BASE_URL) ||
+  (typeof process !== "undefined" &&
+    process.env &&
+    process.env.REACT_APP_API_BASE) ||
+  (typeof window !== "undefined" &&
+  window.location &&
+  window.location.hostname.includes("localhost")
+    ? "http://localhost:5000"
+    : "https://retainai-app.onrender.com");
+
+const API_BASE = String(RAW_API_BASE || "").replace(/\/$/, "");
+
 // Slides order
-const SLIDES = ["email", "password", "name", "businessName", "businessType", "location", "teamSize", "avatar", "extra"];
+const SLIDES = [
+  "email",
+  "password",
+  "name",
+  "businessName",
+  "businessType",
+  "location",
+  "teamSize",
+  "avatar",
+  "extra",
+];
 
 function Progress({ step, total }) {
   const pct = Math.round(((step + 1) / total) * 100);
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: 1, color: BG.text60 }}>STEP {step + 1} / {total}</div>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          marginBottom: 8,
+        }}
+      >
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            letterSpacing: 1,
+            color: BG.text60,
+          }}
+        >
+          STEP {step + 1} / {total}
+        </div>
         <div style={{ fontSize: 12, color: BG.text60 }}>{pct}%</div>
       </div>
-      <div style={{ height: 8, borderRadius: 999, overflow: "hidden", border: `1px solid ${BG.line}`, background: "#0E1013" }}>
+      <div
+        style={{
+          height: 8,
+          borderRadius: 999,
+          overflow: "hidden",
+          border: `1px solid ${BG.line}`,
+          background: "#0E1013",
+        }}
+      >
         <div style={{ width: `${pct}%`, height: "100%", background: BG.gold }} />
       </div>
     </div>
@@ -44,7 +93,8 @@ function Slide({ active, children }) {
         top: 0,
         width: "100%",
         opacity: active ? 1 : 0,
-        transition: "left .35s cubic-bezier(.9,.01,.29,.98), opacity .35s",
+        transition:
+          "left .35s cubic-bezier(.9,.01,.29,.98), opacity .35s",
       }}
     >
       {children}
@@ -72,6 +122,18 @@ function Chip({ children, onClick, active = false }) {
   );
 }
 
+// small helper to fetch with a timeout (guards hanging requests)
+async function apiFetch(url, options = {}, timeoutMs = 15000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: ctrl.signal });
+    return res;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 export default function Signup() {
   const [step, setStep] = useState(0);
 
@@ -94,6 +156,7 @@ export default function Signup() {
 
   const [error, setError] = useState("");
   const [googleProcessing, setGoogleProcessing] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
 
   const total = SLIDES.length;
@@ -111,16 +174,17 @@ export default function Signup() {
   const handleGoogleSuccess = async (credentialResponse) => {
     setGoogleProcessing(true);
     try {
-      const token = credentialResponse.credential;
+      const token = credentialResponse?.credential;
+      if (!token) throw new Error("Missing credential");
       const decoded = jwtDecode(token);
-      setEmail(decoded.email || "");
-      setName(decoded.name || "");
-      setAvatar(decoded.picture || defaultAvatar);
+      setEmail((decoded?.email || "").trim());
+      setName(decoded?.name || "");
+      setAvatar(decoded?.picture || defaultAvatar);
       setError("");
-      setGoogleProcessing(false);
-      setStep(1);
+      setStep(1); // move to password
     } catch {
       setError("Google signup error.");
+    } finally {
       setGoogleProcessing(false);
     }
   };
@@ -137,62 +201,153 @@ export default function Signup() {
   // step validation
   function canContinue(current = step) {
     switch (SLIDES[current]) {
-      case "email": return /^\S+@\S+\.\S+$/.test(email);
-      case "password": return password.length >= 8;
-      case "name": return name.trim().length > 1;
-      case "businessName": return businessName.trim().length > 1;
-      case "businessType": return businessType.trim().length > 1;
-      case "location": return location.trim().length > 1;
-      case "teamSize": return String(teamSize).trim().length > 0;
-      default: return true;
+      case "email":
+        return /^\S+@\S+\.\S+$/.test(email.trim());
+      case "password":
+        return password.length >= 8;
+      case "name":
+        return name.trim().length > 1;
+      case "businessName":
+        return businessName.trim().length > 1;
+      case "businessType":
+        return businessType.trim().length > 1;
+      case "location":
+        return location.trim().length > 1;
+      case "teamSize":
+        return String(teamSize).trim().length > 0;
+      default:
+        return true;
     }
   }
-  function nextStep() { if (!canContinue(step)) return setError("Please complete this step."); setError(""); setStep((s) => Math.min(total - 1, s + 1)); }
-  function prevStep() { setError(""); setStep((s) => Math.max(0, s - 1)); }
+  function nextStep() {
+    if (!canContinue(step)) {
+      setError("Please complete this step.");
+      return;
+    }
+    setError("");
+    setStep((s) => Math.min(total - 1, s + 1));
+  }
+  function prevStep() {
+    setError("");
+    setStep((s) => Math.max(0, s - 1));
+  }
   const onEnter = (e, fn) => e.key === "Enter" && fn();
 
   // submit
   async function handleSignup(e) {
     e.preventDefault();
+    if (submitting) return;
     setError("");
-    if (!agree) { setError("Please agree to the Terms and Privacy Policy."); return; }
-    if (!email || !password || !name || !businessName || !businessType || !location || !teamSize) {
+
+    if (!agree) {
+      setError("Please agree to the Terms and Privacy Policy.");
+      return;
+    }
+
+    if (
+      !email ||
+      !password ||
+      !name ||
+      !businessName ||
+      !businessType ||
+      !location ||
+      !teamSize
+    ) {
       setError("All required fields must be filled.");
       return;
     }
+
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!/^\S+@\S+\.\S+$/.test(trimmedEmail)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+
+    // normalize team size (support "50+")
+    const normalizedTeamSize =
+      String(teamSize).trim() === "50+"
+        ? "50+"
+        : String(parseInt(teamSize, 10) || 1);
+
+    setSubmitting(true);
     try {
-      const res = await fetch("http://localhost:5000/api/signup", {
+      const res = await apiFetch(`${API_BASE}/api/signup`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          email,
+          email: trimmedEmail,
           password,
-          name,
-          businessName,
-          businessType,
-          location,
-          teamSize,
+          name: name.trim(),
+          businessName: businessName.trim(),
+          businessType: businessType.trim(),
+          location: location.trim(),
+          teamSize: normalizedTeamSize,
           logo: avatar || defaultAvatar,
-          phone,
-          website,
-          instagram,
-          referral,
+          phone: phone.trim(),
+          website: website.trim(),
+          instagram: instagram.trim(),
+          referral: referral.trim(),
         }),
       });
-      const data = await res.json();
-      if (!res.ok) { setError(data.error || "Signup failed."); return; }
-      if (data.checkoutUrl) { window.location = data.checkoutUrl; return; }
-      localStorage.setItem("user", JSON.stringify({
-        email, name, logo: avatar || defaultAvatar, businessName, businessType, location, teamSize, phone, website, instagram, referral,
-      }));
+
+      let data = {};
+      try {
+        data = await res.json();
+      } catch {
+        // no-op if backend returns empty
+      }
+
+      if (!res.ok) {
+        setError(data?.error || `Signup failed (${res.status}).`);
+        return;
+      }
+
+      // Optional: redirect to Stripe checkout if provided
+      if (data.checkoutUrl) {
+        window.location.assign(data.checkoutUrl);
+        return;
+      }
+
+      // persist like Login.jsx does
+      const userPayload = {
+        email: trimmedEmail,
+        name: name.trim(),
+        logo: avatar || defaultAvatar,
+        businessName: businessName.trim(),
+        businessType: businessType.trim(),
+        location: location.trim(),
+        teamSize: normalizedTeamSize,
+        phone: phone.trim(),
+        website: website.trim(),
+        instagram: instagram.trim(),
+        referral: referral.trim(),
+      };
+      localStorage.setItem("user", JSON.stringify(userPayload));
+      localStorage.setItem("userEmail", trimmedEmail);
+      document.cookie = `user_email=${encodeURIComponent(
+        trimmedEmail
+      )}; Path=/; SameSite=Lax; Max-Age=2592000`;
+
       navigate("/app");
-    } catch { setError("Signup error."); }
+    } catch (err) {
+      setError(err?.name === "AbortError" ? "Network timeout. Please try again." : "Signup error.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
     <div style={{ minHeight: "100vh", background: BG.page, color: "#fff" }}>
       {/* gold glows */}
-      <div aria-hidden style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 0 }}>
+      <div
+        aria-hidden
+        style={{
+          position: "fixed",
+          inset: 0,
+          pointerEvents: "none",
+          zIndex: 0,
+        }}
+      >
         <div
           style={{
             position: "absolute",
@@ -223,7 +378,15 @@ export default function Signup() {
       </div>
 
       {/* top bar */}
-      <div style={{ position: "sticky", top: 0, zIndex: 5, background: "#0C0D10", borderBottom: `1px solid ${BG.line}` }}>
+      <div
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 5,
+          background: "#0C0D10",
+          borderBottom: `1px solid ${BG.line}`,
+        }}
+      >
         <div
           style={{
             maxWidth: 1120,
@@ -235,19 +398,37 @@ export default function Signup() {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <img src={logo} alt="RetainAI" style={{ width: 28, height: 28, borderRadius: 6 }} />
-            <span style={{ color: BG.gold, fontWeight: 900, letterSpacing: 0.2 }}>RetainAI</span>
+            <img
+              src={logo}
+              alt="RetainAI"
+              style={{ width: 28, height: 28, borderRadius: 6 }}
+            />
+            <span
+              style={{
+                color: BG.gold,
+                fontWeight: 900,
+                letterSpacing: 0.2,
+              }}
+            >
+              RetainAI
+            </span>
           </div>
           <div style={{ fontSize: 13, color: BG.text60 }}>
             Have an account?{" "}
-            <Link to="/login" style={{ color: BG.goldDeep, textDecoration: "underline" }}>
+            <Link
+              to="/login"
+              style={{
+                color: BG.goldDeep,
+                textDecoration: "underline",
+              }}
+            >
               Log in
             </Link>
           </div>
         </div>
       </div>
 
-      {/* content (symmetrical spacing) */}
+      {/* content */}
       <div
         style={{
           position: "relative",
@@ -273,24 +454,71 @@ export default function Signup() {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <img src={logo} alt="RetainAI" style={{ width: 48, height: 48, borderRadius: 12, background: "#111" }} />
-            <div style={{ fontSize: 28, fontWeight: 900, color: BG.gold }}>RetainAI</div>
+            <img
+              src={logo}
+              alt="RetainAI"
+              style={{
+                width: 48,
+                height: 48,
+                borderRadius: 12,
+                background: "#111",
+              }}
+            />
+            <div style={{ fontSize: 28, fontWeight: 900, color: BG.gold }}>
+              RetainAI
+            </div>
           </div>
           <div style={{ marginTop: 10, color: BG.text80 }}>Start free — 14 days</div>
-          <h1 style={{ marginTop: 10, fontSize: 24, fontWeight: 800, lineHeight: 1.3 }}>
+          <h1
+            style={{
+              marginTop: 10,
+              fontSize: 24,
+              fontWeight: 800,
+              lineHeight: 1.3,
+            }}
+          >
             Set up your account. We’ll personalize RetainAI to your business.
           </h1>
-          <ul style={{ marginTop: 16, color: BG.text80, fontSize: 14, lineHeight: 1.6 }}>
+          <ul
+            style={{
+              marginTop: 16,
+              color: BG.text80,
+              fontSize: 14,
+              lineHeight: 1.6,
+            }}
+          >
             <li>• WhatsApp + email in one inbox</li>
             <li>• Emotional-AI replies that sound like you</li>
             <li>• Smart follow-ups so fewer leads go cold</li>
             <li>• Guided onboarding (10 minutes)</li>
           </ul>
-          <div style={{ position: "absolute", bottom: 28, left: 28, right: 28, fontSize: 12, color: BG.text60 }}>
+          <div
+            style={{
+              position: "absolute",
+              bottom: 28,
+              left: 28,
+              right: 28,
+              fontSize: 12,
+              color: BG.text60,
+            }}
+          >
             By continuing, you agree to our{" "}
-            <a href="/terms-of-service" style={{ color: BG.goldDeep, textDecoration: "underline" }}>Terms</a>{" "}
+            <a
+              href="/terms-of-service"
+              style={{ color: BG.goldDeep, textDecoration: "underline" }}
+              rel="noopener noreferrer"
+            >
+              Terms
+            </a>{" "}
             and{" "}
-            <a href="/privacy-policy" style={{ color: BG.goldDeep, textDecoration: "underline" }}>Privacy Policy</a>.
+            <a
+              href="/privacy-policy"
+              style={{ color: BG.goldDeep, textDecoration: "underline" }}
+              rel="noopener noreferrer"
+            >
+              Privacy Policy
+            </a>
+            .
           </div>
         </aside>
 
@@ -306,14 +534,20 @@ export default function Signup() {
             overflow: "hidden",
           }}
         >
-          <form onSubmit={handleSignup} autoComplete="on" style={{ position: "relative", minHeight: 460 }}>
+          <form
+            onSubmit={handleSignup}
+            autoComplete="on"
+            style={{ position: "relative", minHeight: 460 }}
+          >
             <Progress step={step} total={SLIDES.length} />
 
             <div style={{ position: "relative", marginTop: 16, minHeight: 360 }}>
               {/* Email */}
               <Slide active={step === 0}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <label style={{ color: BG.text60, fontSize: 14 }}>What’s your email?</label>
+                  <label style={{ color: BG.text60, fontSize: 14 }}>
+                    What’s your email?
+                  </label>
                   <input
                     type="email"
                     value={email}
@@ -321,13 +555,48 @@ export default function Signup() {
                     onKeyDown={(e) => onEnter(e, nextStep)}
                     placeholder="you@business.com"
                     autoFocus
-                    style={{ padding: "12px 14px", borderRadius: 12, border: `1px solid ${BG.line}`, background: "#0E1013", color: "#fff", fontSize: 16 }}
+                    autoComplete="username email"
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 12,
+                      border: `1px solid ${BG.line}`,
+                      background: "#0E1013",
+                      color: "#fff",
+                      fontSize: 16,
+                    }}
                   />
-                  <button type="button" onClick={nextStep} disabled={!/^\S+@\S+\.\S+$/.test(email)} style={{ background: BG.gold, color: "#0B0B0C", fontWeight: 800, border: 0, borderRadius: 12, padding: "12px 0", fontSize: 16, opacity: /^\S+@\S+\.\S+$/.test(email) ? 1 : 0.7 }}>
+                  <button
+                    type="button"
+                    onClick={nextStep}
+                    disabled={!/^\S+@\S+\.\S+$/.test(email.trim())}
+                    style={{
+                      background: BG.gold,
+                      color: "#0B0B0C",
+                      fontWeight: 800,
+                      border: 0,
+                      borderRadius: 12,
+                      padding: "12px 0",
+                      fontSize: 16,
+                      opacity: /^\S+@\S+\.\S+$/.test(email.trim()) ? 1 : 0.7,
+                      cursor: /^\S+@\S+\.\S+$/.test(email.trim())
+                        ? "pointer"
+                        : "not-allowed",
+                    }}
+                  >
                     Continue
                   </button>
 
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, color: BG.text60, fontWeight: 700, fontSize: 14, margin: "6px 0" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      color: BG.text60,
+                      fontWeight: 700,
+                      fontSize: 14,
+                      margin: "6px 0",
+                    }}
+                  >
                     <div style={{ flex: 1, borderBottom: `1px solid ${BG.line}` }} />
                     <span>or</span>
                     <div style={{ flex: 1, borderBottom: `1px solid ${BG.line}` }} />
@@ -341,14 +610,20 @@ export default function Signup() {
                     theme="filled_black"
                     shape="pill"
                   />
-                  {googleProcessing && <div style={{ color: BG.gold, marginTop: 8 }}>Loading Google…</div>}
+                  {googleProcessing && (
+                    <div style={{ color: BG.gold, marginTop: 8 }}>
+                      Loading Google…
+                    </div>
+                  )}
                 </div>
               </Slide>
 
               {/* Password */}
               <Slide active={step === 1}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <label style={{ color: BG.text60, fontSize: 14 }}>Create a password</label>
+                  <label style={{ color: BG.text60, fontSize: 14 }}>
+                    Create a password
+                  </label>
                   <div style={{ position: "relative" }}>
                     <input
                       type={showPw ? "text" : "password"}
@@ -356,24 +631,93 @@ export default function Signup() {
                       onChange={(e) => setPassword(e.target.value)}
                       onKeyDown={(e) => onEnter(e, nextStep)}
                       placeholder="Min 8 characters"
-                      style={{ width: "100%", padding: "12px 14px", paddingRight: 54, borderRadius: 12, border: `1px solid ${BG.line}`, background: "#0E1013", color: "#fff", fontSize: 16 }}
+                      autoComplete="new-password"
+                      style={{
+                        width: "100%",
+                        padding: "12px 14px",
+                        paddingRight: 54,
+                        borderRadius: 12,
+                        border: `1px solid ${BG.line}`,
+                        background: "#0E1013",
+                        color: "#fff",
+                        fontSize: 16,
+                      }}
                     />
-                    <button type="button" onClick={() => setShowPw((v) => !v)} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", fontSize: 12, color: BG.text60, background: "transparent", border: 0, cursor: "pointer" }}>
+                    <button
+                      type="button"
+                      onClick={() => setShowPw((v) => !v)}
+                      style={{
+                        position: "absolute",
+                        right: 10,
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        fontSize: 12,
+                        color: BG.text60,
+                        background: "transparent",
+                        border: 0,
+                        cursor: "pointer",
+                      }}
+                    >
                       {showPw ? "Hide" : "Show"}
                     </button>
                   </div>
                   {/* strength */}
                   <div>
-                    <div style={{ height: 4, borderRadius: 999, overflow: "hidden", background: "#0E1013", border: `1px solid ${BG.line}` }}>
-                      <div style={{ width: `${(pwStrength / 4) * 100}%`, height: "100%", background: pwStrength >= 3 ? BG.gold : "#7a6c3a", transition: "width .2s" }} />
+                    <div
+                      style={{
+                        height: 4,
+                        borderRadius: 999,
+                        overflow: "hidden",
+                        background: "#0E1013",
+                        border: `1px solid ${BG.line}`,
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${(pwStrength / 4) * 100}%`,
+                          height: "100%",
+                          background: pwStrength >= 3 ? BG.gold : "#7a6c3a",
+                          transition: "width .2s",
+                        }}
+                      />
                     </div>
                     <div style={{ fontSize: 12, color: BG.text60, marginTop: 6 }}>
                       Use 8+ characters with a mix of letters, numbers, and symbols.
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 10 }}>
-                    <button type="button" onClick={prevStep} style={{ padding: "12px 0", flex: 1, borderRadius: 12, border: `1px solid ${BG.line}`, background: "#101216", color: "#fff" }}>Back</button>
-                    <button type="button" onClick={nextStep} disabled={password.length < 8} style={{ padding: "12px 0", flex: 1, borderRadius: 12, border: 0, fontWeight: 800, background: BG.gold, color: "#0B0B0C", opacity: password.length < 8 ? 0.7 : 1 }}>Continue</button>
+                    <button
+                      type="button"
+                      onClick={prevStep}
+                      style={{
+                        padding: "12px 0",
+                        flex: 1,
+                        borderRadius: 12,
+                        border: `1px solid ${BG.line}`,
+                        background: "#101216",
+                        color: "#fff",
+                      }}
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={nextStep}
+                      disabled={password.length < 8}
+                      style={{
+                        padding: "12px 0",
+                        flex: 1,
+                        borderRadius: 12,
+                        border: 0,
+                        fontWeight: 800,
+                        background: BG.gold,
+                        color: "#0B0B0C",
+                        opacity: password.length < 8 ? 0.7 : 1,
+                        cursor: password.length < 8 ? "not-allowed" : "pointer",
+                      }}
+                    >
+                      Continue
+                    </button>
                   </div>
                 </div>
               </Slide>
@@ -381,11 +725,57 @@ export default function Signup() {
               {/* Name */}
               <Slide active={step === 2}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <label style={{ color: BG.text60, fontSize: 14 }}>What’s your name?</label>
-                  <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => onEnter(e, nextStep)} placeholder="Ariana Smith" style={{ padding: "12px 14px", borderRadius: 12, border: `1px solid ${BG.line}`, background: "#0E1013", color: "#fff", fontSize: 16 }} />
+                  <label style={{ color: BG.text60, fontSize: 14 }}>
+                    What’s your name?
+                  </label>
+                  <input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    onKeyDown={(e) => onEnter(e, nextStep)}
+                    placeholder="Ariana Smith"
+                    autoComplete="name"
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 12,
+                      border: `1px solid ${BG.line}`,
+                      background: "#0E1013",
+                      color: "#fff",
+                      fontSize: 16,
+                    }}
+                  />
                   <div style={{ display: "flex", gap: 10 }}>
-                    <button type="button" onClick={prevStep} style={{ padding: "12px 0", flex: 1, borderRadius: 12, border: `1px solid ${BG.line}`, background: "#101216", color: "#fff" }}>Back</button>
-                    <button type="button" onClick={nextStep} disabled={!name.trim()} style={{ padding: "12px 0", flex: 1, borderRadius: 12, border: 0, fontWeight: 800, background: BG.gold, color: "#0B0B0C", opacity: name.trim() ? 1 : 0.7 }}>Continue</button>
+                    <button
+                      type="button"
+                      onClick={prevStep}
+                      style={{
+                        padding: "12px 0",
+                        flex: 1,
+                        borderRadius: 12,
+                        border: `1px solid ${BG.line}`,
+                        background: "#101216",
+                        color: "#fff",
+                      }}
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={nextStep}
+                      disabled={!name.trim()}
+                      style={{
+                        padding: "12px 0",
+                        flex: 1,
+                        borderRadius: 12,
+                        border: 0,
+                        fontWeight: 800,
+                        background: BG.gold,
+                        color: "#0B0B0C",
+                        opacity: name.trim() ? 1 : 0.7,
+                        cursor: name.trim() ? "pointer" : "not-allowed",
+                      }}
+                    >
+                      Continue
+                    </button>
                   </div>
                 </div>
               </Slide>
@@ -393,11 +783,56 @@ export default function Signup() {
               {/* Business name */}
               <Slide active={step === 3}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <label style={{ color: BG.text60, fontSize: 14 }}>Business name</label>
-                  <input value={businessName} onChange={(e) => setBusinessName(e.target.value)} onKeyDown={(e) => onEnter(e, nextStep)} placeholder="Juvjeli Nails" style={{ padding: "12px 14px", borderRadius: 12, border: `1px solid ${BG.line}`, background: "#0E1013", color: "#fff", fontSize: 16 }} />
+                  <label style={{ color: BG.text60, fontSize: 14 }}>
+                    Business name
+                  </label>
+                  <input
+                    value={businessName}
+                    onChange={(e) => setBusinessName(e.target.value)}
+                    onKeyDown={(e) => onEnter(e, nextStep)}
+                    placeholder="Juvjeli Nails"
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 12,
+                      border: `1px solid ${BG.line}`,
+                      background: "#0E1013",
+                      color: "#fff",
+                      fontSize: 16,
+                    }}
+                  />
                   <div style={{ display: "flex", gap: 10 }}>
-                    <button type="button" onClick={prevStep} style={{ padding: "12px 0", flex: 1, borderRadius: 12, border: `1px solid ${BG.line}`, background: "#101216", color: "#fff" }}>Back</button>
-                    <button type="button" onClick={nextStep} disabled={!businessName.trim()} style={{ padding: "12px 0", flex: 1, borderRadius: 12, border: 0, fontWeight: 800, background: BG.gold, color: "#0B0B0C", opacity: businessName.trim() ? 1 : 0.7 }}>Continue</button>
+                    <button
+                      type="button"
+                      onClick={prevStep}
+                      style={{
+                        padding: "12px 0",
+                        flex: 1,
+                        borderRadius: 12,
+                        border: `1px solid ${BG.line}`,
+                        background: "#101216",
+                        color: "#fff",
+                      }}
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={nextStep}
+                      disabled={!businessName.trim()}
+                      style={{
+                        padding: "12px 0",
+                        flex: 1,
+                        borderRadius: 12,
+                        border: 0,
+                        fontWeight: 800,
+                        background: BG.gold,
+                        color: "#0B0B0C",
+                        opacity: businessName.trim() ? 1 : 0.7,
+                        cursor: businessName.trim() ? "pointer" : "not-allowed",
+                      }}
+                    >
+                      Continue
+                    </button>
                   </div>
                 </div>
               </Slide>
@@ -405,16 +840,69 @@ export default function Signup() {
               {/* Business type */}
               <Slide active={step === 4}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <label style={{ color: BG.text60, fontSize: 14 }}>What type of business?</label>
-                  <input value={businessType} onChange={(e) => setBusinessType(e.target.value)} onKeyDown={(e) => onEnter(e, nextStep)} placeholder="Nail salon, Barbershop, Agency…" style={{ padding: "12px 14px", borderRadius: 12, border: `1px solid ${BG.line}`, background: "#0E1013", color: "#fff", fontSize: 16 }} />
+                  <label style={{ color: BG.text60, fontSize: 14 }}>
+                    What type of business?
+                  </label>
+                  <input
+                    value={businessType}
+                    onChange={(e) => setBusinessType(e.target.value)}
+                    onKeyDown={(e) => onEnter(e, nextStep)}
+                    placeholder="Nail salon, Barbershop, Agency…"
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 12,
+                      border: `1px solid ${BG.line}`,
+                      background: "#0E1013",
+                      color: "#fff",
+                      fontSize: 16,
+                    }}
+                  />
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                    {["Salon", "Barbershop", "HVAC", "Real estate", "Coaching", "Agency"].map((t) => (
-                      <Chip key={t} onClick={() => setBusinessType(t)} active={businessType === t}>{t}</Chip>
-                    ))}
+                    {["Salon", "Barbershop", "HVAC", "Real estate", "Coaching", "Agency"].map(
+                      (t) => (
+                        <Chip
+                          key={t}
+                          onClick={() => setBusinessType(t)}
+                          active={businessType === t}
+                        >
+                          {t}
+                        </Chip>
+                      )
+                    )}
                   </div>
                   <div style={{ display: "flex", gap: 10 }}>
-                    <button type="button" onClick={prevStep} style={{ padding: "12px 0", flex: 1, borderRadius: 12, border: `1px solid ${BG.line}`, background: "#101216", color: "#fff" }}>Back</button>
-                    <button type="button" onClick={nextStep} disabled={!businessType.trim()} style={{ padding: "12px 0", flex: 1, borderRadius: 12, border: 0, fontWeight: 800, background: BG.gold, color: "#0B0B0C", opacity: businessType.trim() ? 1 : 0.7 }}>Continue</button>
+                    <button
+                      type="button"
+                      onClick={prevStep}
+                      style={{
+                        padding: "12px 0",
+                        flex: 1,
+                        borderRadius: 12,
+                        border: `1px solid ${BG.line}`,
+                        background: "#101216",
+                        color: "#fff",
+                      }}
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={nextStep}
+                      disabled={!businessType.trim()}
+                      style={{
+                        padding: "12px 0",
+                        flex: 1,
+                        borderRadius: 12,
+                        border: 0,
+                        fontWeight: 800,
+                        background: BG.gold,
+                        color: "#0B0B0C",
+                        opacity: businessType.trim() ? 1 : 0.7,
+                        cursor: businessType.trim() ? "pointer" : "not-allowed",
+                      }}
+                    >
+                      Continue
+                    </button>
                   </div>
                 </div>
               </Slide>
@@ -422,11 +910,57 @@ export default function Signup() {
               {/* Location */}
               <Slide active={step === 5}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <label style={{ color: BG.text60, fontSize: 14 }}>Where do you operate?</label>
-                  <input value={location} onChange={(e) => setLocation(e.target.value)} onKeyDown={(e) => onEnter(e, nextStep)} placeholder="City, Province/State" style={{ padding: "12px 14px", borderRadius: 12, border: `1px solid ${BG.line}`, background: "#0E1013", color: "#fff", fontSize: 16 }} />
+                  <label style={{ color: BG.text60, fontSize: 14 }}>
+                    Where do you operate?
+                  </label>
+                  <input
+                    value={location}
+                    onChange={(e) => setLocation(e.target.value)}
+                    onKeyDown={(e) => onEnter(e, nextStep)}
+                    placeholder="City, Province/State"
+                    autoComplete="address-level2"
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 12,
+                      border: `1px solid ${BG.line}`,
+                      background: "#0E1013",
+                      color: "#fff",
+                      fontSize: 16,
+                    }}
+                  />
                   <div style={{ display: "flex", gap: 10 }}>
-                    <button type="button" onClick={prevStep} style={{ padding: "12px 0", flex: 1, borderRadius: 12, border: `1px solid ${BG.line}`, background: "#101216", color: "#fff" }}>Back</button>
-                    <button type="button" onClick={nextStep} disabled={!location.trim()} style={{ padding: "12px 0", flex: 1, borderRadius: 12, border: 0, fontWeight: 800, background: BG.gold, color: "#0B0B0C", opacity: location.trim() ? 1 : 0.7 }}>Continue</button>
+                    <button
+                      type="button"
+                      onClick={prevStep}
+                      style={{
+                        padding: "12px 0",
+                        flex: 1,
+                        borderRadius: 12,
+                        border: `1px solid ${BG.line}`,
+                        background: "#101216",
+                        color: "#fff",
+                      }}
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={nextStep}
+                      disabled={!location.trim()}
+                      style={{
+                        padding: "12px 0",
+                        flex: 1,
+                        borderRadius: 12,
+                        border: 0,
+                        fontWeight: 800,
+                        background: BG.gold,
+                        color: "#0B0B0C",
+                        opacity: location.trim() ? 1 : 0.7,
+                        cursor: location.trim() ? "pointer" : "not-allowed",
+                      }}
+                    >
+                      Continue
+                    </button>
                   </div>
                 </div>
               </Slide>
@@ -435,30 +969,149 @@ export default function Signup() {
               <Slide active={step === 6}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                   <label style={{ color: BG.text60, fontSize: 14 }}>Team size</label>
-                  <input type="number" min={1} value={teamSize} onChange={(e) => setTeamSize(e.target.value)} onKeyDown={(e) => onEnter(e, nextStep)} placeholder="1" style={{ padding: "12px 14px", borderRadius: 12, border: `1px solid ${BG.line}`, background: "#0E1013", color: "#fff", fontSize: 16 }} />
+                  <input
+                    type="number"
+                    min={1}
+                    value={String(teamSize).replace(/[^\d+]/g, "")}
+                    onChange={(e) => setTeamSize(e.target.value)}
+                    onKeyDown={(e) => onEnter(e, nextStep)}
+                    placeholder="1"
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 12,
+                      border: `1px solid ${BG.line}`,
+                      background: "#0E1013",
+                      color: "#fff",
+                      fontSize: 16,
+                    }}
+                  />
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                    {[1, 2, 5, 10, 20].map((n) => <Chip key={n} onClick={() => setTeamSize(String(n))} active={String(teamSize) === String(n)}>{n}</Chip>)}
-                    <Chip onClick={() => setTeamSize("50+")} active={teamSize === "50+"}>50+</Chip>
+                    {[1, 2, 5, 10, 20].map((n) => (
+                      <Chip
+                        key={n}
+                        onClick={() => setTeamSize(String(n))}
+                        active={String(teamSize) === String(n)}
+                      >
+                        {n}
+                      </Chip>
+                    ))}
+                    <Chip
+                      onClick={() => setTeamSize("50+")}
+                      active={teamSize === "50+"}
+                    >
+                      50+
+                    </Chip>
                   </div>
                   <div style={{ display: "flex", gap: 10 }}>
-                    <button type="button" onClick={prevStep} style={{ padding: "12px 0", flex: 1, borderRadius: 12, border: `1px solid ${BG.line}`, background: "#101216", color: "#fff" }}>Back</button>
-                    <button type="button" onClick={nextStep} disabled={!String(teamSize).trim()} style={{ padding: "12px 0", flex: 1, borderRadius: 12, border: 0, fontWeight: 800, background: BG.gold, color: "#0B0B0C", opacity: String(teamSize).trim() ? 1 : 0.7 }}>Continue</button>
+                    <button
+                      type="button"
+                      onClick={prevStep}
+                      style={{
+                        padding: "12px 0",
+                        flex: 1,
+                        borderRadius: 12,
+                        border: `1px solid ${BG.line}`,
+                        background: "#101216",
+                        color: "#fff",
+                      }}
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={nextStep}
+                      disabled={!String(teamSize).trim()}
+                      style={{
+                        padding: "12px 0",
+                        flex: 1,
+                        borderRadius: 12,
+                        border: 0,
+                        fontWeight: 800,
+                        background: BG.gold,
+                        color: "#0B0B0C",
+                        opacity: String(teamSize).trim() ? 1 : 0.7,
+                        cursor: String(teamSize).trim() ? "pointer" : "not-allowed",
+                      }}
+                    >
+                      Continue
+                    </button>
                   </div>
                 </div>
               </Slide>
 
               {/* Avatar */}
               <Slide active={step === 7}>
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
-                  <div style={{ color: BG.text60, fontSize: 14 }}>Add a logo or profile photo (optional)</div>
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: 12,
+                  }}
+                >
+                  <div style={{ color: BG.text60, fontSize: 14 }}>
+                    Add a logo or profile photo (optional)
+                  </div>
                   <label style={{ cursor: "pointer", textAlign: "center" }}>
-                    <img src={avatar || defaultAvatar} alt="Profile" style={{ width: 90, height: 90, objectFit: "cover", borderRadius: "50%", border: `3px solid ${BG.gold}` }} />
-                    <input type="file" accept="image/*" style={{ display: "none" }} onChange={handleAvatarUpload} />
-                    <div style={{ marginTop: 6, fontWeight: 600, color: BG.goldDeep }}>Upload image</div>
+                    <img
+                      src={avatar || defaultAvatar}
+                      alt="Profile"
+                      onError={(e) => {
+                        e.currentTarget.onerror = null;
+                        e.currentTarget.src = defaultAvatar;
+                      }}
+                      style={{
+                        width: 90,
+                        height: 90,
+                        objectFit: "cover",
+                        borderRadius: "50%",
+                        border: `3px solid ${BG.gold}`,
+                      }}
+                    />
+                    <input
+                      type="file"
+                      accept="image/*"
+                      style={{ display: "none" }}
+                      onChange={handleAvatarUpload}
+                    />
+                    <div
+                      style={{
+                        marginTop: 6,
+                        fontWeight: 600,
+                        color: BG.goldDeep,
+                      }}
+                    >
+                      Upload image
+                    </div>
                   </label>
                   <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-                    <button type="button" onClick={prevStep} style={{ padding: "12px 18px", borderRadius: 12, border: `1px solid ${BG.line}`, background: "#101216", color: "#fff" }}>Back</button>
-                    <button type="button" onClick={nextStep} style={{ padding: "12px 18px", borderRadius: 12, border: 0, fontWeight: 800, background: BG.gold, color: "#0B0B0C" }}>Continue</button>
+                    <button
+                      type="button"
+                      onClick={prevStep}
+                      style={{
+                        padding: "12px 18px",
+                        borderRadius: 12,
+                        border: `1px solid ${BG.line}`,
+                        background: "#101216",
+                        color: "#fff",
+                      }}
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={nextStep}
+                      style={{
+                        padding: "12px 18px",
+                        borderRadius: 12,
+                        border: 0,
+                        fontWeight: 800,
+                        background: BG.gold,
+                        color: "#0B0B0C",
+                      }}
+                    >
+                      Continue
+                    </button>
                   </div>
                 </div>
               </Slide>
@@ -466,29 +1119,156 @@ export default function Signup() {
               {/* Extras + submit */}
               <Slide active={step === 8}>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <label style={{ color: BG.text60, fontSize: 14 }}>Final details (optional)</label>
-                  <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Phone" style={{ padding: "12px 14px", borderRadius: 12, border: `1px solid ${BG.line}`, background: "#0E1013", color: "#fff", fontSize: 16 }} />
-                  <input value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="Website" style={{ padding: "12px 14px", borderRadius: 12, border: `1px solid ${BG.line}`, background: "#0E1013", color: "#fff", fontSize: 16 }} />
-                  <input value={instagram} onChange={(e) => setInstagram(e.target.value)} placeholder="Instagram" style={{ padding: "12px 14px", borderRadius: 12, border: `1px solid ${BG.line}`, background: "#0E1013", color: "#fff", fontSize: 16 }} />
-                  <input value={referral} onChange={(e) => setReferral(e.target.value)} placeholder="How did you hear about us?" style={{ padding: "12px 14px", borderRadius: 12, border: `1px solid ${BG.line}`, background: "#0E1013", color: "#fff", fontSize: 16 }} />
+                  <label style={{ color: BG.text60, fontSize: 14 }}>
+                    Final details (optional)
+                  </label>
+                  <input
+                    type="tel"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder="Phone"
+                    autoComplete="tel"
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 12,
+                      border: `1px solid ${BG.line}`,
+                      background: "#0E1013",
+                      color: "#fff",
+                      fontSize: 16,
+                    }}
+                  />
+                  <input
+                    value={website}
+                    onChange={(e) => setWebsite(e.target.value)}
+                    placeholder="Website"
+                    autoComplete="url"
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 12,
+                      border: `1px solid ${BG.line}`,
+                      background: "#0E1013",
+                      color: "#fff",
+                      fontSize: 16,
+                    }}
+                  />
+                  <input
+                    value={instagram}
+                    onChange={(e) => setInstagram(e.target.value)}
+                    placeholder="Instagram"
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 12,
+                      border: `1px solid ${BG.line}`,
+                      background: "#0E1013",
+                      color: "#fff",
+                      fontSize: 16,
+                    }}
+                  />
+                  <input
+                    value={referral}
+                    onChange={(e) => setReferral(e.target.value)}
+                    placeholder="How did you hear about us?"
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 12,
+                      border: `1px solid ${BG.line}`,
+                      background: "#0E1013",
+                      color: "#fff",
+                      fontSize: 16,
+                    }}
+                  />
 
-                  <label style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 14 }}>
-                    <input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} style={{ marginTop: 3, accentColor: BG.gold }} />
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 8,
+                      fontSize: 14,
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={agree}
+                      onChange={(e) => setAgree(e.target.checked)}
+                      style={{ marginTop: 3, accentColor: BG.gold }}
+                    />
                     <span style={{ color: BG.text60 }}>
-                      I agree to the <a href="/terms-of-service" style={{ color: BG.goldDeep, textDecoration: "underline" }}>Terms</a> and{" "}
-                      <a href="/privacy-policy" style={{ color: BG.goldDeep, textDecoration: "underline" }}>Privacy Policy</a>.
+                      I agree to the{" "}
+                      <a
+                        href="/terms-of-service"
+                        style={{
+                          color: BG.goldDeep,
+                          textDecoration: "underline",
+                        }}
+                        rel="noopener noreferrer"
+                      >
+                        Terms
+                      </a>{" "}
+                      and{" "}
+                      <a
+                        href="/privacy-policy"
+                        style={{
+                          color: BG.goldDeep,
+                          textDecoration: "underline",
+                        }}
+                        rel="noopener noreferrer"
+                      >
+                        Privacy Policy
+                      </a>
+                      .
                     </span>
                   </label>
 
                   <div style={{ display: "flex", gap: 10, marginTop: 6 }}>
-                    <button type="button" onClick={prevStep} style={{ padding: "12px 0", flex: 1, borderRadius: 12, border: `1px solid ${BG.line}`, background: "#101216", color: "#fff" }}>Back</button>
-                    <button type="submit" style={{ padding: "12px 0", flex: 1, borderRadius: 12, border: 0, fontWeight: 800, background: BG.gold, color: "#0B0B0C" }}>
-                      Create account
+                    <button
+                      type="button"
+                      onClick={prevStep}
+                      disabled={submitting}
+                      style={{
+                        padding: "12px 0",
+                        flex: 1,
+                        borderRadius: 12,
+                        border: `1px solid ${BG.line}`,
+                        background: "#101216",
+                        color: "#fff",
+                        cursor: submitting ? "not-allowed" : "pointer",
+                        opacity: submitting ? 0.7 : 1,
+                      }}
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={submitting}
+                      style={{
+                        padding: "12px 0",
+                        flex: 1,
+                        borderRadius: 12,
+                        border: 0,
+                        fontWeight: 800,
+                        background: BG.gold,
+                        color: "#0B0B0C",
+                        cursor: submitting ? "not-allowed" : "pointer",
+                        opacity: submitting ? 0.7 : 1,
+                      }}
+                    >
+                      {submitting ? "Creating…" : "Create account"}
                     </button>
                   </div>
 
                   {error && (
-                    <div style={{ marginTop: 10, fontSize: 14, background: "#1a1306", border: "1px solid #6b4e00", color: BG.gold, borderRadius: 10, padding: "8px 10px" }}>
+                    <div
+                      role="alert"
+                      style={{
+                        marginTop: 10,
+                        fontSize: 14,
+                        background: "#1a1306",
+                        border: "1px solid #6b4e00",
+                        color: BG.gold,
+                        borderRadius: 10,
+                        padding: "8px 10px",
+                      }}
+                    >
                       {error}
                     </div>
                   )}

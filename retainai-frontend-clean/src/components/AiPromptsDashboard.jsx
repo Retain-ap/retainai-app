@@ -1,21 +1,21 @@
 // src/components/AiPromptsDashboard.jsx
-import { API_BASE } from "../config";
 import React, { useState, useMemo } from "react";
+import { api } from "../lib/api"; // ← use shared API helper (credentials included)
 import "./AiPrompts.css";
 
 // Prompt types
 const PROMPT_TYPES = [
-  { key: "followup", label: "Follow Up",     instruction: "Write a friendly, personalized follow-up." },
-  { key: "reengage", label: "Re-engage",     instruction: "Write a gentle, empathetic message to re-engage an inactive client." },
-  { key: "birthday", label: "Birthday",      instruction: "Write a warm, personalized birthday greeting." },
-  { key: "apology",  label: "Apology",       instruction: "Write a sincere apology for a mistake or bad experience." },
-  { key: "upsell",   label: "Upsell",        instruction: "Write a thoughtful message recommending an additional service or product." },
+  { key: "followup",  label: "Follow Up",  instruction: "Write a friendly, personalized follow-up." },
+  { key: "reengage",  label: "Re-engage",  instruction: "Write a gentle, empathetic message to re-engage an inactive client." },
+  { key: "birthday",  label: "Birthday",   instruction: "Write a warm, personalized birthday greeting." },
+  { key: "apology",   label: "Apology",    instruction: "Write a sincere apology for a mistake or bad experience." },
+  { key: "upsell",    label: "Upsell",     instruction: "Write a thoughtful message recommending an additional service or product." },
 ];
 
 export default function AiPromptsDashboard({
   leads = [],
   user = {},
-  onSendAIPromptEmail // optional override
+  onSendAIPromptEmail, // optional override
 }) {
   const [search, setSearch]           = useState("");
   const [focusedLead, setFocusedLead] = useState(null);
@@ -25,108 +25,100 @@ export default function AiPromptsDashboard({
   const [activeTab, setActiveTab]     = useState(PROMPT_TYPES[0].key);
   const [copied, setCopied]           = useState({});
 
-  // Prefer true brand; fall back gently
-  const getBrandName = () =>
-    user.business || user.businessName || user.lineOfBusiness || "Your Business";
-  const getBusinessType = () =>
-    user.businessType || "";
-  const getUserName = () =>
-    user.name || user.email?.split("@")[0] || "Your Team";
+  // helpers
+  const getBrandName   = () => user.business || user.businessName || user.lineOfBusiness || "Your Business";
+  const getBusinessType= () => user.businessType || "";
+  const getUserName    = () => user.name || user.email?.split("@")[0] || "Your Team";
+  const leadKey        = (l) => l?.id || l?._id || l?.email || l?.name || "";
 
   // filter leads
   const filteredLeads = useMemo(() => {
     const q = search.toLowerCase();
-    return leads.filter(
-      l =>
-        (l.name  && l.name.toLowerCase().includes(q)) ||
+    return (leads || []).filter((l) => {
+      const tags = Array.isArray(l.tags) ? l.tags : [];
+      return (
+        (l.name && l.name.toLowerCase().includes(q)) ||
         (l.email && l.email.toLowerCase().includes(q)) ||
-        (l.tags || []).some(t => t.toLowerCase().includes(q))
-    );
+        tags.some((t) => String(t).toLowerCase().includes(q))
+      );
+    });
   }, [leads, search]);
 
   // generate AI
-  const handleGenerate = async (leadId, lead, type) => {
-    setLoading(l => ({ ...l, [leadId]: true }));
-    setResponses(r => ({ ...r, [leadId]: { ...r[leadId], [type]: "" } }));
+  const handleGenerate = async (lead, type) => {
+    const key = leadKey(lead);
+    if (!key) return;
 
-    const p = PROMPT_TYPES.find(pt => pt.key === type) || {};
+    setLoading((m) => ({ ...m, [key]: true }));
+    setResponses((r) => ({ ...r, [key]: { ...r[key], [type]: "" } }));
+
+    const p = PROMPT_TYPES.find((pt) => pt.key === type) || {};
     try {
-      const res = await fetch(`${API_BASE}/api/generate_prompt`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userEmail:     user.email,            // let backend load saved brand
-          leadName:      lead.name || "",
-          businessName:  getBrandName(),        // e.g. "jaivio nails"
-          businessType:  getBusinessType(),     // e.g. "nail salon"
-          userName:      getUserName(),
-          tags:          (lead.tags || []).join(", "),
-          notes:         lead.notes || "",
-          lastContacted: lead.last_contacted,
-          status:        lead.status || "",
-          promptType:    type,
-          instruction:   p.instruction || ""
-        })
+      const data = await api.post("/api/generate_prompt", {
+        userEmail:     user.email,            // let backend load saved brand
+        leadName:      lead.name || "",
+        businessName:  getBrandName(),        // e.g. "jaivio nails"
+        businessType:  getBusinessType(),     // e.g. "nail salon"
+        userName:      getUserName(),
+        tags:          (lead.tags || []).join(", "),
+        notes:         lead.notes || "",
+        lastContacted: lead.last_contacted,
+        status:        lead.status || "",
+        promptType:    type,
+        instruction:   p.instruction || "",
       });
-      const data = await res.json();
-      let out = (data.prompt || data.error || "").trim();
+
+      // Expecting { prompt: "..." }
+      let out = (data?.prompt || data?.error || "").trim();
+      // strip any "Subject:" lines if your model sometimes includes them
       out = out.replace(/^(?=.*subject:).*$/gim, "").trim();
-      setResponses(r => ({
-        ...r,
-        [leadId]: { ...r[leadId], [type]: out }
-      }));
-    } catch {
-      setResponses(r => ({
-        ...r,
-        [leadId]: { ...r[leadId], [type]: "AI error." }
-      }));
+
+      setResponses((r) => ({ ...r, [key]: { ...r[key], [type]: out } }));
+    } catch (e) {
+      setResponses((r) => ({ ...r, [key]: { ...r[key], [type]: e?.message || "AI error." } }));
+    } finally {
+      setLoading((m) => ({ ...m, [key]: false }));
     }
-    setLoading(l => ({ ...l, [leadId]: false }));
   };
 
-  // send email
+  // send email/notification
   const handleSend = async (lead, message, type) => {
+    const key = leadKey(lead);
+    if (!message) return;
+
     if (typeof onSendAIPromptEmail === "function") {
       return onSendAIPromptEmail(lead, message, type);
     }
-    setNotifStatus(s => ({ ...s, [lead.id]: "sending" }));
+
+    setNotifStatus((s) => ({ ...s, [key]: "sending" }));
     const subject = `${getUserName()} at ${getBrandName()}`;
     try {
-      const res = await fetch(`${API_BASE}/api/send-ai-message`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          leadEmail:    lead.email,
-          userEmail:    user.email,
-          message,
-          subject,
-          promptType:   type,
-          leadName:     lead.name || "",
-          userName:     getUserName(),
-          businessName: getBrandName(),
-        })
+      await api.post("/api/send-ai-message", {
+        leadEmail:    lead.email,
+        userEmail:    user.email,
+        message,
+        subject,
+        promptType:   type,
+        leadName:     lead.name || "",
+        userName:     getUserName(),
+        businessName: getBrandName(),
       });
-      setNotifStatus(s => ({
-        ...s,
-        [lead.id]: res.ok ? "success" : "error"
-      }));
+      setNotifStatus((s) => ({ ...s, [key]: "success" }));
     } catch {
-      setNotifStatus(s => ({ ...s, [lead.id]: "error" }));
+      setNotifStatus((s) => ({ ...s, [key]: "error" }));
+    } finally {
+      setTimeout(() => setNotifStatus((s) => ({ ...s, [key]: undefined })), 2500);
     }
-    setTimeout(() => {
-      setNotifStatus(s => ({ ...s, [lead.id]: undefined }));
-    }, 2500);
   };
 
   // copy
-  const handleCopy = (leadId, tab) => {
-    const text = responses[leadId]?.[tab];
+  const handleCopy = (lead, tab) => {
+    const key = leadKey(lead);
+    const text = responses[key]?.[tab];
     if (!text) return;
     navigator.clipboard.writeText(text);
-    setCopied(c => ({ ...c, [`${leadId}-${tab}`]: true }));
-    setTimeout(() => {
-      setCopied(c => ({ ...c, [`${leadId}-${tab}`]: false }));
-    }, 1200);
+    setCopied((c) => ({ ...c, [`${key}-${tab}`]: true }));
+    setTimeout(() => setCopied((c) => ({ ...c, [`${key}-${tab}`]: false })), 1200);
   };
 
   // render
@@ -140,36 +132,38 @@ export default function AiPromptsDashboard({
               className="ai-search"
               placeholder="Search leads by name, email, or tag…"
               value={search}
-              onChange={e => setSearch(e.target.value)}
+              onChange={(e) => setSearch(e.target.value)}
             />
           </div>
           <div className="ai-grid">
             {filteredLeads.length === 0 ? (
-              <div className="ai-grid-empty">
-                No leads found. Try another search.
-              </div>
-            ) : filteredLeads.map(lead => (
-              <div
-                key={lead.id}
-                className="ai-card"
-                onClick={() => setFocusedLead(lead)}
-              >
-                <div className="lead-name">{lead.name || "(No Name)"}</div>
-                <div className="lead-email">{lead.email}</div>
-                <div className="lead-status">
-                  Status: <span>{lead.status || "—"}</span>
+              <div className="ai-grid-empty">No leads found. Try another search.</div>
+            ) : (
+              filteredLeads.map((lead) => (
+                <div
+                  key={leadKey(lead)}
+                  className="ai-card"
+                  onClick={() => setFocusedLead(lead)}
+                >
+                  <div className="lead-name">{lead.name || "(No Name)"}</div>
+                  <div className="lead-email">{lead.email}</div>
+                  <div className="lead-status">
+                    Status: <span>{lead.status || "—"}</span>
+                  </div>
+                  <div className="lead-tags">
+                    Tags:{" "}
+                    {Array.isArray(lead.tags) && lead.tags.length
+                      ? lead.tags.map((t) => (
+                          <span key={t} className="tag">
+                            {t}
+                          </span>
+                        ))
+                      : "—"}
+                  </div>
+                  <div className="lead-notes">Notes: {lead.notes || "—"}</div>
                 </div>
-                <div className="lead-tags">
-                  Tags:{" "}
-                  {lead.tags?.length
-                    ? lead.tags.map(t => <span key={t} className="tag">{t}</span>)
-                    : "—"}
-                </div>
-                <div className="lead-notes">
-                  Notes: {lead.notes || "—"}
-                </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </>
       ) : (
@@ -185,16 +179,18 @@ export default function AiPromptsDashboard({
             </div>
             <div className="ai-detail-tags">
               Tags:{" "}
-              {focusedLead.tags?.length
-                ? focusedLead.tags.map(t => <span key={t} className="tag">{t}</span>)
+              {Array.isArray(focusedLead.tags) && focusedLead.tags.length
+                ? focusedLead.tags.map((t) => (
+                    <span key={t} className="tag">
+                      {t}
+                    </span>
+                  ))
                 : "—"}
             </div>
-            <div className="ai-detail-notes">
-              Notes: {focusedLead.notes || "—"}
-            </div>
+            <div className="ai-detail-notes">Notes: {focusedLead.notes || "—"}</div>
 
             <div className="ai-tabs">
-              {PROMPT_TYPES.map(pt => (
+              {PROMPT_TYPES.map((pt) => (
                 <button
                   key={pt.key}
                   className={`ai-tab${activeTab === pt.key ? " active" : ""}`}
@@ -207,44 +203,44 @@ export default function AiPromptsDashboard({
 
             <button
               className="ai-generate"
-              onClick={() => handleGenerate(focusedLead.id, focusedLead, activeTab)}
-              disabled={loading[focusedLead.id]}
+              onClick={() => handleGenerate(focusedLead, activeTab)}
+              disabled={!!loading[leadKey(focusedLead)]}
             >
-              {loading[focusedLead.id]
+              {loading[leadKey(focusedLead)]
                 ? "Generating..."
-                : `Generate ${PROMPT_TYPES.find(pt => pt.key === activeTab)?.label} AI`}
+                : `Generate ${PROMPT_TYPES.find((pt) => pt.key === activeTab)?.label} AI`}
             </button>
 
-            {responses[focusedLead.id]?.[activeTab] && (
+            {responses[leadKey(focusedLead)]?.[activeTab] && (
               <div className="ai-response">
                 <strong>AI Suggestion:</strong>
                 <p className="ai-response-text">
-                  {responses[focusedLead.id][activeTab]}
+                  {responses[leadKey(focusedLead)][activeTab]}
                 </p>
                 <button
                   className="ai-response-copy"
-                  onClick={() => handleCopy(focusedLead.id, activeTab)}
+                  onClick={() => handleCopy(focusedLead, activeTab)}
                 >
-                  {copied[`${focusedLead.id}-${activeTab}`] ? "Copied!" : "Copy"}
+                  {copied[`${leadKey(focusedLead)}-${activeTab}`] ? "Copied!" : "Copy"}
                 </button>
                 <button
                   className="ai-response-send"
                   onClick={() =>
                     handleSend(
                       focusedLead,
-                      responses[focusedLead.id][activeTab],
+                      responses[leadKey(focusedLead)][activeTab],
                       activeTab
                     )
                   }
-                  disabled={loading[focusedLead.id]}
+                  disabled={!!loading[leadKey(focusedLead)]}
                 >
-                  {notifStatus[focusedLead.id] === "sending"
+                  {notifStatus[leadKey(focusedLead)] === "sending"
                     ? "Sending..."
-                    : notifStatus[focusedLead.id] === "success"
-                      ? "Sent!"
-                      : notifStatus[focusedLead.id] === "error"
-                        ? "Error"
-                        : "Send Notification"}
+                    : notifStatus[leadKey(focusedLead)] === "success"
+                    ? "Sent!"
+                    : notifStatus[leadKey(focusedLead)] === "error"
+                    ? "Error"
+                    : "Send Notification"}
                 </button>
               </div>
             )}

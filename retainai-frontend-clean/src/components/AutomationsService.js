@@ -1,5 +1,7 @@
 // src/components/AutomationsService.js
-const BASE = process.env.REACT_APP_API_URL || "";
+import { API_BASE } from "../config";   // ✅ use shared base
+
+const BASE = API_BASE;
 const ROOT = `${BASE}/api/automations`;
 
 async function jfetch(
@@ -8,18 +10,20 @@ async function jfetch(
 ) {
   const res = await fetch(url, {
     method,
+    credentials: "include",            // ✅ send cookies for auth
+    mode: "cors",
     headers: {
       Accept: "application/json",
       ...(body ? { "Content-Type": "application/json" } : {}),
-      ...(userEmail ? { "X-User-Email": userEmail } : {}),
+      ...(userEmail ? { "X-User-Email": userEmail } : {}), // optional hint header
       ...headers,
     },
     body: body ? JSON.stringify(body) : undefined,
   });
+
   let data = null;
-  try {
-    data = await res.json();
-  } catch (_) {}
+  try { data = await res.json(); } catch (_) {}
+
   if (!res.ok) {
     const msg =
       (data && (data.error || data.message)) ||
@@ -174,8 +178,7 @@ async function runEngineOnce() {
   return jfetch(`${ROOT}/run`, { method: "POST" });
 }
 
-/* ---------------- WHATSAPP (message templates etc.) ---------------- */
-// These endpoints are provided by your backend WhatsApp module.
+/* ---------------- WHATSAPP (optional module) ---------------- */
 async function getMsgTemplates() {
   return jfetch(`${BASE}/api/whatsapp/templates`);
 }
@@ -230,6 +233,7 @@ const api = {
   runEngineOnce,
   // whatsapp / templates
   getMsgTemplates,
+  getWhatsAppTemplates: getMsgTemplates, // ✅ alias for your component’s check
   getMsgTemplateInfo,
   getMsgHealth,
   getMsgWindowState,

@@ -19,14 +19,24 @@ import Automations from "./Automations";
 import InviteTeamModal from "./InviteTeamModal";
 
 const DEFAULT_TAGS = [
-  "VIP","New","Repeat","Upsell","Needs Attention","Appointment Set",
-  "Waiting on Reply","Invoice Sent","Birthday","Long Term","Happy","Upset"
+  "VIP",
+  "New",
+  "Repeat",
+  "Upsell",
+  "Needs Attention",
+  "Appointment Set",
+  "Waiting on Reply",
+  "Invoice Sent",
+  "Birthday",
+  "Long Term",
+  "Happy",
+  "Upset",
 ];
 
 function getAppointmentsFromLeads(leads) {
   let out = [];
-  (leads || []).forEach(lead => {
-    (lead.appointments || []).forEach(app => {
+  (leads || []).forEach((lead) => {
+    (lead.appointments || []).forEach((app) => {
       out.push({ ...app, type: "appointment", lead, checked: !!app.done });
     });
   });
@@ -35,7 +45,9 @@ function getAppointmentsFromLeads(leads) {
 
 function extractTags(leads, userTags) {
   const tagSet = new Set([...DEFAULT_TAGS, ...(userTags || [])]);
-  (leads || []).forEach(lead => (lead.tags || []).forEach(tag => tagSet.add(tag)));
+  (leads || []).forEach((lead) =>
+    (lead.tags || []).forEach((tag) => tagSet.add(tag))
+  );
   return Array.from(tagSet);
 }
 
@@ -55,7 +67,8 @@ function CrmDashboard() {
       if (u && typeof u === "object") {
         return {
           ...u,
-          lineOfBusiness: u.lineOfBusiness || u.businessType || u.business || "",
+          lineOfBusiness:
+            u.lineOfBusiness || u.businessType || u.business || "",
           name: u.name || "",
           logo: u.logo || "",
           email: u.email || "",
@@ -87,7 +100,11 @@ function CrmDashboard() {
 
   const [leads, setLeads] = useState([]);
   const [userTags, setUserTags] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("userTags") || "[]"); } catch { return []; }
+    try {
+      return JSON.parse(localStorage.getItem("userTags") || "[]");
+    } catch {
+      return [];
+    }
   });
   const [tags, setTags] = useState([]);
   const [showLeadModal, setShowLeadModal] = useState(false);
@@ -114,8 +131,8 @@ function CrmDashboard() {
     if (user && user.email) {
       setLoadingLeads(true);
       fetch(`/api/leads/${encodeURIComponent(user.email)}`)
-        .then(res => res.json())
-        .then(data => {
+        .then((res) => res.json())
+        .then((data) => {
           const ls = Array.isArray(data.leads) ? data.leads : [];
           setLeads(ls);
           setTags(extractTags(ls, userTags));
@@ -144,20 +161,20 @@ function CrmDashboard() {
   const handleUpdateLead = useCallback((updated) => {
     if (!updated) return;
 
-    setLeads(prev => {
+    setLeads((prev) => {
       const match = (a, b) =>
         String(a?.id ?? a?.email) === String(b?.id ?? b?.email);
 
-    const exists = prev.some(l => match(l, updated));
+      const exists = prev.some((l) => match(l, updated));
       const next = exists
-        ? prev.map(l => (match(l, updated) ? { ...l, ...updated } : l))
+        ? prev.map((l) => (match(l, updated) ? { ...l, ...updated } : l))
         : [updated, ...prev];
 
       saveLeadsToBackend(next);
       return next;
     });
 
-    setDrawerLead(prev => {
+    setDrawerLead((prev) => {
       if (!prev) return prev;
       const same =
         String(prev?.id ?? prev?.email) === String(updated?.id ?? updated?.email);
@@ -206,13 +223,16 @@ function CrmDashboard() {
 
   const handleLeadContacted = async (lead) => {
     if (!user || !user.email || !lead.id) return;
-    await fetch(`/api/leads/${encodeURIComponent(user.email)}/${lead.id}/contacted`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" }
-    });
+    await fetch(
+      `/api/leads/${encodeURIComponent(user.email)}/${lead.id}/contacted`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      }
+    );
     fetch(`/api/leads/${encodeURIComponent(user.email)}`)
-      .then(res => res.json())
-      .then(data => setLeads(Array.isArray(data.leads) ? data.leads : []));
+      .then((res) => res.json())
+      .then((data) => setLeads(Array.isArray(data.leads) ? data.leads : []));
   };
 
   const handleLogout = () => {
@@ -229,7 +249,7 @@ function CrmDashboard() {
       message: aiResponse,
       leadId: lead.id,
       leadEmail: lead.email,
-      userEmail: user.email
+      userEmail: user.email,
     });
     setSection("notification-send");
   }
@@ -237,7 +257,12 @@ function CrmDashboard() {
     if (leadId) setHighlightLeadIds([leadId]);
     setSection("messages");
   }
-  async function handleSendAIPromptEmail(lead, aiResponse, aiSubject = "Message from RetainAI", promptType = "") {
+  async function handleSendAIPromptEmail(
+    lead,
+    aiResponse,
+    aiSubject = "Message from RetainAI",
+    promptType = ""
+  ) {
     if (!lead || !lead.email || !aiResponse) {
       alert("Missing recipient or message");
       return;
@@ -254,7 +279,7 @@ function CrmDashboard() {
       const res = await fetch("/api/send-ai-message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
       });
       if (res.ok) {
         setHighlightLeadIds([lead.id]);
@@ -273,7 +298,7 @@ function CrmDashboard() {
     const res = await fetch(`/api/user/${encodeURIComponent(user.email)}`);
     if (res.ok) {
       const data = await res.json();
-      setUserState(prev =>
+      setUserState((prev) =>
         prev
           ? {
               ...prev,
@@ -301,8 +326,8 @@ function CrmDashboard() {
   useEffect(() => {
     if ((section === "calendar" || section === "appointments") && user && user.email) {
       fetch(`/api/google/events/${encodeURIComponent(user.email)}`)
-        .then(res => res.json())
-        .then(data => setGoogleEvents(data.items || []));
+        .then((res) => res.json())
+        .then((data) => setGoogleEvents(data.items || []));
     }
     if (section !== "calendar" && section !== "appointments") setGoogleEvents([]);
   }, [section, user]);
@@ -313,15 +338,20 @@ function CrmDashboard() {
   }
   function handleQuickAddSave({ leadId, title, time }) {
     if (!leadId || !title || !quickAddDate) return;
-    setLeads(prev =>
-      prev.map(l =>
+    setLeads((prev) =>
+      prev.map((l) =>
         l.id === Number(leadId)
           ? {
               ...l,
               appointments: [
                 ...(l.appointments || []),
-                { title, date: quickAddDate.toISOString().slice(0, 10), time, done: false }
-              ]
+                {
+                  title,
+                  date: quickAddDate.toISOString().slice(0, 10),
+                  time,
+                  done: false,
+                },
+              ],
             }
           : l
       )
@@ -330,8 +360,14 @@ function CrmDashboard() {
     setQuickAddDate(null);
   }
 
-  const openImports = () => { setSettingsTab("imports"); setSection("settings"); };
-  const openTeamTab = () => { setSettingsTab("team"); setSection("settings"); };
+  const openImports = () => {
+    setSettingsTab("imports");
+    setSection("settings");
+  };
+  const openTeamTab = () => {
+    setSettingsTab("team");
+    setSection("settings");
+  };
 
   useEffect(() => {
     window.RetainAI = window.RetainAI || {};
@@ -359,7 +395,7 @@ function CrmDashboard() {
         section={section}
         collapsed={sidebarCollapsed}
         setCollapsed={setSidebarCollapsed}
-        onInviteTeam={() => setShowInviteModal(true)}   // you already have this
+        onInviteTeam={() => setShowInviteModal(true)} // you already have this
         onImportLeads={openImports}
       />
 
@@ -372,7 +408,7 @@ function CrmDashboard() {
           display: "flex",
           flexDirection: "column",
           width: `calc(100vw - ${SIDEBAR_WIDTH}px)`,
-          padding: "24px",          // symmetric, simple
+          padding: "24px", // symmetric, simple
           boxSizing: "border-box",
         }}
       >
@@ -383,8 +419,14 @@ function CrmDashboard() {
               leads={leads}
               loading={loadingLeads}
               user={user}
-              onAddLead={() => { setEditLead(null); setShowLeadModal(true); }}
-              onEditLead={lead => { setEditLead(lead); setShowLeadModal(true); }}
+              onAddLead={() => {
+                setEditLead(null);
+                setShowLeadModal(true);
+              }}
+              onEditLead={(lead) => {
+                setEditLead(lead);
+                setShowLeadModal(true);
+              }}
               onDeleteLead={handleDeleteLead}
               drawerLead={drawerLead}
               setDrawerLead={setDrawerLead}
@@ -396,7 +438,10 @@ function CrmDashboard() {
               <LeadModal
                 lead={editLead}
                 tags={tags}
-                onClose={() => { setShowLeadModal(false); setEditLead(null); }}
+                onClose={() => {
+                  setShowLeadModal(false);
+                  setEditLead(null);
+                }}
                 onSave={handleSaveLead}
               />
             )}
@@ -405,7 +450,14 @@ function CrmDashboard() {
 
         {section === "calendar" && (
           <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                marginBottom: 12,
+              }}
+            >
               <button
                 style={{
                   background: calendarView === "calendar" ? "#191919" : "#141414",
@@ -423,7 +475,8 @@ function CrmDashboard() {
               </button>
               <button
                 style={{
-                  background: calendarView === "appointments" ? "#191919" : "#141414",
+                  background:
+                    calendarView === "appointments" ? "#191919" : "#141414",
                   color: "#f7cb53",
                   border: "1px solid #222",
                   borderRadius: "0 10px 10px 0",
@@ -448,7 +501,9 @@ function CrmDashboard() {
                 }}
                 onClick={async () => {
                   if (user && user.email) {
-                    const res = await fetch(`/api/google/events/${encodeURIComponent(user.email)}`);
+                    const res = await fetch(
+                      `/api/google/events/${encodeURIComponent(user.email)}`
+                    );
                     const data = await res.json();
                     setGoogleEvents(data.items || []);
                   }
@@ -460,7 +515,7 @@ function CrmDashboard() {
 
             {calendarView === "calendar" ? (
               <Calendar
-                user={user}   // <-- added
+                user={user} // <-- added
                 leads={leads}
                 events={crmAppointments}
                 googleEvents={googleEvents}
@@ -470,7 +525,7 @@ function CrmDashboard() {
               />
             ) : (
               <Appointments
-                user={user}   // <-- added
+                user={user} // <-- added
                 leads={leads}
                 setLeads={setLeads}
                 events={crmAppointments}
@@ -481,9 +536,16 @@ function CrmDashboard() {
             {showQuickAdd && (
               <div
                 style={{
-                  position: "fixed", left: 0, top: 0, width: "100vw", height: "100vh",
-                  background: "#000a", zIndex: 99,
-                  display: "flex", alignItems: "center", justifyContent: "center",
+                  position: "fixed",
+                  left: 0,
+                  top: 0,
+                  width: "100vw",
+                  height: "100vh",
+                  background: "#000a",
+                  zIndex: 99,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
                 }}
               >
                 <div
@@ -498,13 +560,23 @@ function CrmDashboard() {
                     boxShadow: "0 2px 22px #0008",
                   }}
                 >
-                  <h3 style={{ color: "#f7cb53", fontWeight: 800, marginBottom: 12, fontSize: "1.05rem" }}>
+                  <h3
+                    style={{
+                      color: "#f7cb53",
+                      fontWeight: 800,
+                      marginBottom: 12,
+                      fontSize: "1.05rem",
+                    }}
+                  >
                     Add Appointment ({quickAddDate?.toLocaleDateString()})
                   </h3>
                   <QuickAddForm
                     leads={leads}
                     onSave={handleQuickAddSave}
-                    onCancel={() => { setShowQuickAdd(false); setQuickAddDate(null); }}
+                    onCancel={() => {
+                      setShowQuickAdd(false);
+                      setQuickAddDate(null);
+                    }}
                   />
                 </div>
               </div>
@@ -576,55 +648,123 @@ function QuickAddForm({ leads, onSave, onCancel }) {
 
   return (
     <form
-      onSubmit={e => {
+      onSubmit={(e) => {
         e.preventDefault();
         onSave({ leadId, title, time });
       }}
     >
       <div style={{ marginBottom: 14 }}>
-        <label style={{ color: "#fff", fontWeight: 700, display: "block", marginBottom: 6 }}>Lead</label>
+        <label
+          style={{
+            color: "#fff",
+            fontWeight: 700,
+            display: "block",
+            marginBottom: 6,
+          }}
+        >
+          Lead
+        </label>
         <select
           value={leadId}
-          onChange={e => setLeadId(e.target.value)}
-          style={{ padding: "10px 12px", borderRadius: 8, background: "#181a1b", color: "#fff", border: "1px solid #444", width: "100%" }}
+          onChange={(e) => setLeadId(e.target.value)}
+          style={{
+            padding: "10px 12px",
+            borderRadius: 8,
+            background: "#181a1b",
+            color: "#fff",
+            border: "1px solid #444",
+            width: "100%",
+          }}
           required
         >
           <option value="">Select Lead</option>
-          {leads.map(lead => (
-            <option value={lead.id} key={lead.id}>{lead.name}</option>
+          {leads.map((lead) => (
+            <option value={lead.id} key={lead.id}>
+              {lead.name}
+            </option>
           ))}
         </select>
       </div>
       <div style={{ marginBottom: 14 }}>
-        <label style={{ color: "#fff", fontWeight: 700, display: "block", marginBottom: 6 }}>Title</label>
+        <label
+          style={{
+            color: "#fff",
+            fontWeight: 700,
+            display: "block",
+            marginBottom: 6,
+          }}
+        >
+          Title
+        </label>
         <input
           value={title}
-          onChange={e => setTitle(e.target.value)}
+          onChange={(e) => setTitle(e.target.value)}
           placeholder="Appointment title"
-          style={{ padding: "10px 12px", borderRadius: 8, background: "#181a1b", color: "#fff", border: "1px solid #444", width: "100%" }}
+          style={{
+            padding: "10px 12px",
+            borderRadius: 8,
+            background: "#181a1b",
+            color: "#fff",
+            border: "1px solid #444",
+            width: "100%",
+          }}
           required
         />
       </div>
       <div style={{ marginBottom: 14 }}>
-        <label style={{ color: "#fff", fontWeight: 700, display: "block", marginBottom: 6 }}>Time</label>
+        <label
+          style={{
+            color: "#fff",
+            fontWeight: 700,
+            display: "block",
+            marginBottom: 6,
+          }}
+        >
+          Time
+        </label>
         <input
           type="time"
           value={time}
-          onChange={e => setTime(e.target.value)}
-          style={{ padding: "10px 12px", borderRadius: 8, background: "#181a1b", color: "#fff", border: "1px solid #444", width: "100%" }}
+          onChange={(e) => setTime(e.target.value)}
+          style={{
+            padding: "10px 12px",
+            borderRadius: 8,
+            background: "#181a1b",
+            color: "#fff",
+            border: "1px solid #444",
+            width: "100%",
+          }}
         />
       </div>
       <div style={{ display: "flex", gap: 10 }}>
         <button
           type="submit"
-          style={{ background: "#f7cb53", color: "#232323", fontWeight: 800, border: "none", borderRadius: 8, padding: "11px 0", cursor: "pointer", width: "50%" }}
+          style={{
+            background: "#f7cb53",
+            color: "#232323",
+            fontWeight: 800,
+            border: "none",
+            borderRadius: 8,
+            padding: "11px 0",
+            cursor: "pointer",
+            width: "50%",
+          }}
         >
           Add
         </button>
         <button
           type="button"
           onClick={onCancel}
-          style={{ background: "#232323", color: "#fff", fontWeight: 800, border: "1px solid #444", borderRadius: 8, padding: "11px 0", cursor: "pointer", width: "50%" }}
+          style={{
+            background: "#232323",
+            color: "#fff",
+            fontWeight: 800,
+            border: "1px solid #444",
+            borderRadius: 8,
+            padding: "11px 0",
+            cursor: "pointer",
+            width: "50%",
+          }}
         >
           Cancel
         </button>

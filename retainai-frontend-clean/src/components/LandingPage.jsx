@@ -1,6 +1,6 @@
 // src/components/LandingPage.jsx
-import React, { useMemo, useState } from "react";
-import { motion } from "framer-motion";
+import React, { useMemo, useState, useEffect, useRef } from "react";
+import { motion, useReducedMotion } from "framer-motion";
 
 /**
  * Booking link (Calendly popup + fallback)
@@ -11,7 +11,7 @@ import { motion } from "framer-motion";
 const BOOKING_URL =
   "https://calendly.com/mateozufic1/retainai-setup-10-minutes?hide_gdpr_banner=1&primary_color=D6B25E";
 
-// ---------- THEME ----------
+/* ===================== THEME ===================== */
 const BG = {
   page: "#0B0C0E",
   card: "#15171B",
@@ -20,17 +20,44 @@ const BG = {
   goldDeep: "#D7BB66",
   text60: "rgba(255,255,255,.60)",
   text80: "rgba(255,255,255,.80)",
+  text90: "rgba(255,255,255,.90)",
 };
 
-// ---------- ASSETS ----------
+/* ===================== ASSETS ===================== */
 const brandLogos = [
   "https://upload.wikimedia.org/wikipedia/commons/2/2f/Google_2015_logo.svg",
   "https://upload.wikimedia.org/wikipedia/commons/0/08/Netflix_2015_logo.svg",
   "https://upload.wikimedia.org/wikipedia/commons/5/51/IBM_logo.svg",
 ];
 const DEMO_SRC = "/crm-demo.mp4"; // put your mp4 at public/crm-demo.mp4
+const DEMO_POSTER = "/crm-demo-poster.jpg";
 
-// ---------- MONDAY-STYLE TIP BAR ----------
+/* ===================== UTIL ===================== */
+function useCalendly() {
+  const [ready, setReady] = useState(() => Boolean(window.Calendly));
+  useEffect(() => {
+    if (ready) return;
+    let t;
+    const tick = () => {
+      if (window.Calendly) setReady(true);
+      else t = setTimeout(tick, 250);
+    };
+    tick();
+    return () => clearTimeout(t);
+  }, [ready]);
+  return ready;
+}
+
+function smoothScrollToHash(e) {
+  const href = e.currentTarget?.getAttribute("href");
+  if (!href || !href.startsWith("#")) return;
+  const el = document.querySelector(href);
+  if (!el) return;
+  e.preventDefault();
+  el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/* ===================== SUB-COMPONENTS ===================== */
 function TipBar() {
   const [open, setOpen] = useState(false);
   return (
@@ -54,6 +81,7 @@ function TipBar() {
           onClick={() => setOpen((v) => !v)}
           className="text-xs px-2 py-1 rounded-lg border"
           style={{ borderColor: BG.line, color: BG.text60 }}
+          aria-label={open ? "Hide tip details" : "Show tip details"}
         >
           {open ? "Hide" : "Details"}
         </button>
@@ -68,41 +96,74 @@ function TipBar() {
   );
 }
 
-// ---------- MINI HERO CARDS ----------
+function CardShell({ children }) {
+  return (
+    <div
+      className="rounded-2xl p-4 border shadow-xl"
+      style={{
+        background: BG.card,
+        borderColor: BG.line,
+        boxShadow: "0 8px 40px rgba(0,0,0,.35)",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
 function KpiCard() {
   return (
-    <div className="rounded-2xl p-4 border shadow-xl" style={{ background: BG.card, borderColor: BG.line }}>
-      <div className="text-xs" style={{ color: BG.text60 }}>Follow-ups complete</div>
+    <CardShell>
+      <div className="text-xs" style={{ color: BG.text60 }}>
+        Follow-ups complete
+      </div>
       <div className="flex items-end gap-2 mt-1">
-        <div className="text-3xl font-extrabold">55%</div>
-        <div className="text-xs" style={{ color: BG.text60 }}>this week</div>
+        <div className="text-3xl font-extrabold" aria-label="fifty five percent">
+          55%
+        </div>
+        <div className="text-xs" style={{ color: BG.text60 }}>
+          this week
+        </div>
       </div>
       <div className="mt-3 h-2 rounded-full overflow-hidden bg-[#0f1113] border" style={{ borderColor: BG.line }}>
         <div className="h-full" style={{ width: "55%", background: BG.gold }} />
       </div>
-    </div>
+    </CardShell>
   );
 }
 function ChatCard() {
   return (
-    <div className="rounded-2xl p-4 border shadow-xl" style={{ background: BG.card, borderColor: BG.line }}>
-      <div className="text-xs mb-2" style={{ color: BG.text60 }}>New Reply • WhatsApp</div>
+    <CardShell>
+      <div className="text-xs mb-2" style={{ color: BG.text60 }}>
+        New Reply • WhatsApp
+      </div>
       <div className="rounded-xl p-3 text-sm" style={{ background: "#0E1013", border: `1px solid ${BG.line}` }}>
         “Sounds good — can we book Thursday at 3pm?”
       </div>
       <div className="flex gap-2 mt-3">
-        <span className="px-2 py-1 text-[11px] rounded-lg" style={{ background: "#0E1013", border: `1px solid ${BG.line}`, color: BG.text60 }}>Lead</span>
-        <span className="px-2 py-1 text-[11px] rounded-lg" style={{ background: "#0E1013", border: `1px solid ${BG.line}`, color: BG.text60 }}>AI draft ready</span>
+        <span
+          className="px-2 py-1 text-[11px] rounded-lg"
+          style={{ background: "#0E1013", border: `1px solid ${BG.line}`, color: BG.text60 }}
+        >
+          Lead
+        </span>
+        <span
+          className="px-2 py-1 text-[11px] rounded-lg"
+          style={{ background: "#0E1013", border: `1px solid ${BG.line}`, color: BG.text60 }}
+        >
+          AI draft ready
+        </span>
       </div>
-    </div>
+    </CardShell>
   );
 }
 function SparklineCard() {
   return (
-    <div className="rounded-2xl p-4 border shadow-xl" style={{ background: BG.card, borderColor: BG.line }}>
+    <CardShell>
       <div className="flex items-center justify-between">
         <div className="text-sm font-semibold">Work Summary</div>
-        <div className="text-[11px]" style={{ color: BG.text60 }}>Last 6 months</div>
+        <div className="text-[11px]" style={{ color: BG.text60 }}>
+          Last 6 months
+        </div>
       </div>
       <div className="mt-4 h-24 rounded-lg relative overflow-hidden" style={{ background: "#0E1013", border: `1px solid ${BG.line}` }}>
         <div
@@ -112,18 +173,20 @@ function SparklineCard() {
               "linear-gradient(180deg, rgba(245,216,126,.18), rgba(245,216,126,0) 60%), radial-gradient(120% 120% at 0% 100%, rgba(255,255,255,.05), transparent 60%)",
           }}
         />
-        <svg viewBox="0 0 300 100" className="absolute inset-0">
+        <svg viewBox="0 0 300 100" className="absolute inset-0" role="img" aria-label="trend line">
           <path
             d="M0 80 C40 30, 80 60, 120 42 C160 25, 200 70, 240 50 C270 38, 300 60, 300 60"
-            fill="none" stroke={BG.gold} strokeWidth="2.5" strokeLinecap="round"
+            fill="none"
+            stroke={BG.gold}
+            strokeWidth="2.5"
+            strokeLinecap="round"
           />
         </svg>
       </div>
-    </div>
+    </CardShell>
   );
 }
 
-// ---------- ROI MINI CALCULATOR ----------
 function ROINumbers({ leadsPerWeek, closeRate }) {
   const base = useMemo(
     () => Math.max(0, (Number(leadsPerWeek) || 0) * ((Number(closeRate) || 0) / 100) * 4),
@@ -133,8 +196,15 @@ function ROINumbers({ leadsPerWeek, closeRate }) {
   const withRetain = base * (1 + uplift);
   return (
     <div className="mt-4 text-sm" style={{ color: BG.text80 }}>
-      <div>Est. bookings/month now: <b>{base.toFixed(1)}</b></div>
-      <div>With RetainAI (+20%): <b style={{ color: BG.gold }}>{withRetain.toFixed(1)}</b></div>
+      <div>
+        Est. bookings/month now: <b>{base.toFixed(1)}</b>
+      </div>
+      <div>
+        With RetainAI (+20%):{" "}
+        <b style={{ color: BG.gold }} aria-live="polite">
+          {withRetain.toFixed(1)}
+        </b>
+      </div>
       <div className="text-xs mt-1" style={{ color: BG.text60 }}>
         Assumes smarter follow-ups (no-response ↓ ~31%) and more human replies (reply time ↓ ~42%).
       </div>
@@ -142,46 +212,144 @@ function ROINumbers({ leadsPerWeek, closeRate }) {
   );
 }
 
-// ---------- SMALL BADGE ----------
 function Badge({ children }) {
   return (
-    <span className="px-3 py-1 rounded-full text-sm" style={{ background: "#0E1013", border: `1px solid ${BG.line}` }}>
+    <span
+      className="px-3 py-1 rounded-full text-sm"
+      style={{ background: "#0E1013", border: `1px solid ${BG.line}`, color: BG.text80 }}
+    >
       {children}
     </span>
   );
 }
 
-// ---------- MAIN ----------
+/* ===================== CAROUSEL (no deps) ===================== */
+function Testimonials() {
+  const items = [
+    ["Ariana, Salon", "“Booked 7 extra appointments first week.”"],
+    ["Marco, HVAC", "“No-reply leads finally came back.”"],
+    ["Jade, Coach", "“Replies feel like me. More yes’s.”"],
+    ["Leo, Realtor", "“Shows feel warmer. More offers.”"],
+  ];
+  return (
+    <div className="overflow-x-auto scroll-smooth" style={{ scrollSnapType: "x mandatory" }} aria-label="Testimonials">
+      <div className="flex gap-4 min-w-[640px]">
+        {items.map(([name, quote]) => (
+          <div
+            key={name}
+            className="p-6 rounded-2xl border min-w-[240px] md:min-w-[280px]"
+            style={{ background: BG.card, borderColor: BG.line, scrollSnapAlign: "start" }}
+          >
+            <div className="font-semibold mb-1">{name}</div>
+            <div className="text-sm" style={{ color: BG.text80 }}>
+              {quote}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ===================== MAIN ===================== */
 export default function LandingPage() {
   const [leadsPerWeek, setLeadsPerWeek] = useState(20);
   const [closeRate, setCloseRate] = useState(20);
   const [videoError, setVideoError] = useState(false);
+  const calendlyReady = useCalendly();
+  const prefersReducedMotion = useReducedMotion();
+  const jsonLdRef = useRef(null);
 
+  // JSON-LD (adds once)
+  useEffect(() => {
+    if (jsonLdRef.current) return;
+    const script = document.createElement("script");
+    script.type = "application/ld+json";
+    script.text = JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "SoftwareApplication",
+      name: "RetainAI",
+      applicationCategory: "BusinessApplication",
+      operatingSystem: "Web",
+      offers: {
+        "@type": "Offer",
+        price: "20.00",
+        priceCurrency: "USD",
+      },
+      description:
+        "Emotional-AI CRM: WhatsApp + AI replies that sound human. Automate follow-ups, capture leads, book more appointments.",
+    });
+    document.head.appendChild(script);
+    jsonLdRef.current = script;
+  }, []);
+
+  // Framer variants
   const fadeUp = {
     hidden: { opacity: 0, y: 24 },
-    visible: (i = 1) => ({ opacity: 1, y: 0, transition: { delay: 0.08 * i } }),
+    visible: (i = 1) => ({
+      opacity: 1,
+      y: 0,
+      transition: { delay: prefersReducedMotion ? 0 : 0.08 * i, duration: 0.5 },
+    }),
+  };
+
+  const openCalendly = () => {
+    if (calendlyReady && window.Calendly) {
+      window.Calendly.initPopupWidget({ url: BOOKING_URL });
+    } else {
+      window.open(BOOKING_URL, "_blank", "noopener,noreferrer");
+    }
   };
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: BG.page, color: "#fff" }}>
       {/* BACKGROUND GLOWS */}
       <div aria-hidden className="pointer-events-none fixed inset-0 -z-10">
-        <div className="absolute -top-40 -right-32 w-[900px] h-[900px] blur-[140px] opacity-20 rounded-full" style={{ background: BG.gold }} />
-        <div className="absolute top-1/3 left-1/2 -translate-x-1/2 w-[70vw] h-[70vh] blur-[120px] opacity-[.10] rounded-full" style={{ background: `linear-gradient(90deg, ${BG.gold}, transparent)` }} />
+        <div
+          className="absolute -top-40 -right-32 w-[900px] h-[900px] blur-[140px] opacity-20 rounded-full"
+          style={{ background: BG.gold }}
+        />
+        <div
+          className="absolute top-1/3 left-1/2 -translate-x-1/2 w-[70vw] h-[70vh] blur-[120px] opacity-[.10] rounded-full"
+          style={{ background: `linear-gradient(90deg, ${BG.gold}, transparent)` }}
+        />
       </div>
 
       {/* NAVBAR */}
-      <nav className="sticky top-0 z-40 w-full" style={{ background: "#0C0D10", borderBottom: `1px solid ${BG.line}` }}>
+      <nav
+        className="sticky top-0 z-40 w-full backdrop-blur-md"
+        style={{ background: "rgba(12,13,16,.72)", borderBottom: `1px solid ${BG.line}` }}
+        aria-label="Main"
+      >
         <div className="max-w-7xl mx-auto flex items-center justify-between px-6 py-3">
-          <span className="font-extrabold text-2xl tracking-tight" style={{ color: BG.gold }}>RetainAI</span>
+          <a href="/" className="flex items-center gap-2" aria-label="RetainAI home">
+            <span className="w-3 h-3 rounded-full" style={{ background: BG.gold }} />
+            <span className="font-extrabold text-2xl tracking-tight" style={{ color: BG.gold }}>
+              RetainAI
+            </span>
+          </a>
           <div className="hidden md:flex gap-7 text-sm font-medium">
-            <a href="#features" className="hover:opacity-80 scroll-mt-24">Features</a>
-            <a href="#how" className="hover:opacity-80 scroll-mt-24">How it works</a>
-            <a href="#pricing" className="hover:opacity-80 scroll-mt-24">Pricing</a>
-            <a href="#faq" className="hover:opacity-80 scroll-mt-24">FAQ</a>
+            <a href="#features" onClick={smoothScrollToHash} className="hover:opacity-80 scroll-mt-24">
+              Features
+            </a>
+            <a href="#how" onClick={smoothScrollToHash} className="hover:opacity-80 scroll-mt-24">
+              How it works
+            </a>
+            <a href="#pricing" onClick={smoothScrollToHash} className="hover:opacity-80 scroll-mt-24">
+              Pricing
+            </a>
+            <a href="#faq" onClick={smoothScrollToHash} className="hover:opacity-80 scroll-mt-24">
+              FAQ
+            </a>
           </div>
           <div className="flex gap-3">
-            <a href="/login" className="border px-4 py-2 rounded-xl font-semibold hover:opacity-85" style={{ borderColor: BG.line, background: "#101216", color: BG.gold }}>Login</a>
+            <a
+              href="/login"
+              className="border px-4 py-2 rounded-xl font-semibold hover:opacity-85"
+              style={{ borderColor: BG.line, background: "#101216", color: BG.gold }}
+            >
+              Login
+            </a>
             <a href="/signup" className="px-4 py-2 rounded-xl font-bold" style={{ background: BG.gold, color: "#0B0B0C" }}>
               Start Free Trial
             </a>
@@ -193,24 +361,40 @@ export default function LandingPage() {
       <TipBar />
 
       {/* HERO */}
-      <section className="relative w-full z-10 isolate" style={{ borderBottom: `1px solid ${BG.line}` }}>
+      <header
+        className="relative w-full z-10 isolate"
+        style={{ borderBottom: `1px solid ${BG.line}` }}
+        aria-labelledby="hero-heading"
+      >
         <div className="max-w-7xl mx-auto px-6 pt-20 md:pt-28 pb-16 md:pb-20 grid md:grid-cols-2 gap-12 lg:gap-16">
           {/* LEFT COPY */}
           <div className="min-w-[320px]">
-            <div className="text-sm mb-3 font-semibold uppercase tracking-widest" style={{ color: BG.goldDeep }}>
+            <div
+              className="text-sm mb-3 font-semibold uppercase tracking-widest"
+              style={{ color: BG.goldDeep }}
+              aria-label="Emotional AI CRM"
+            >
               Emotional-AI CRM
             </div>
             <motion.h1
+              id="hero-heading"
               className="text-5xl md:text-6xl font-extrabold leading-tight tracking-tight"
               style={{ color: "#ffffff" }}
-              initial="hidden" whileInView="visible" viewport={{ once: true }} variants={fadeUp}
+              initial="hidden"
+              whileInView="visible"
+              viewport={{ once: true }}
+              variants={fadeUp}
             >
               The CRM that keeps clients coming back.
             </motion.h1>
             <motion.p
               className="text-xl md:text-2xl mt-6 font-medium max-w-xl"
               style={{ color: BG.text80 }}
-              initial="hidden" whileInView="visible" viewport={{ once: true }} custom={2} variants={fadeUp}
+              initial="hidden"
+              whileInView="visible"
+              viewport={{ once: true }}
+              custom={2}
+              variants={fadeUp}
             >
               <b>WhatsApp + AI replies that sound human</b> — so more leads say yes.
             </motion.p>
@@ -218,79 +402,136 @@ export default function LandingPage() {
             {/* Trust bullets */}
             <motion.ul
               className="mt-4 text-sm grid grid-cols-1 sm:grid-cols-3 gap-2 max-w-xl"
-              initial="hidden" whileInView="visible" viewport={{ once: true }} custom={2.5} variants={fadeUp}
+              initial="hidden"
+              whileInView="visible"
+              viewport={{ once: true }}
+              custom={2.5}
+              variants={fadeUp}
               style={{ color: BG.text60 }}
+              aria-label="Key benefits"
             >
               <li>✓ Setup in &lt; 10 minutes</li>
               <li>✓ Cancel anytime</li>
               <li>✓ Guided onboarding</li>
             </motion.ul>
 
-            <motion.div className="flex flex-wrap items-center gap-3 mt-8"
-              initial="hidden" whileInView="visible" viewport={{ once: true }} custom={3} variants={fadeUp}>
-              <a href="/signup" className="px-6 py-3 rounded-xl font-extrabold" style={{ background: BG.gold, color: "#0B0B0C" }}>
+            <motion.div
+              className="flex flex-wrap items-center gap-3 mt-8"
+              initial="hidden"
+              whileInView="visible"
+              viewport={{ once: true }}
+              custom={3}
+              variants={fadeUp}
+            >
+              <a
+                href="/signup"
+                className="px-6 py-3 rounded-xl font-extrabold"
+                style={{ background: BG.gold, color: "#0B0B0C" }}
+                aria-label="Start your 14-day trial"
+              >
                 Start 14-Day Trial
               </a>
-              <a href="#pricing" className="px-5 py-3 rounded-xl font-semibold border hover:opacity-85"
-                 style={{ borderColor: BG.line, background: "#101216", color: "#fff" }}>
+              <a
+                href="#pricing"
+                onClick={smoothScrollToHash}
+                className="px-5 py-3 rounded-xl font-semibold border hover:opacity-85"
+                style={{ borderColor: BG.line, background: "#101216", color: "#fff" }}
+                aria-label="See pricing"
+              >
                 See Pricing
               </a>
+              <button
+                onClick={openCalendly}
+                className="px-5 py-3 rounded-xl font-semibold border hover:opacity-85"
+                style={{ borderColor: BG.line, background: "#101216", color: BG.text90 }}
+                aria-label="Book a 10-minute setup call"
+              >
+                Book a Setup Call
+              </button>
               <span className="text-sm" style={{ color: BG.text60 }}>
-                $30/mo — <span className="font-semibold" style={{ color: BG.gold }}>Launch $20/mo</span>
+                $30/mo — <span className="font-semibold" style={{ color: BG.gold }}>
+                  Launch $20/mo
+                </span>
               </span>
             </motion.div>
 
-            <div className="flex flex-wrap items-center gap-8 mt-8 opacity-70 hover:opacity-100 transition">
+            <div className="flex flex-wrap items-center gap-8 mt-8 opacity-70 hover:opacity-100 transition" aria-label="Trusted by">
               {brandLogos.map((logo, i) => (
-                <img key={i} src={logo} alt="Brand Logo" className="h-7 w-auto grayscale invert" />
+                <img
+                  key={i}
+                  src={logo}
+                  alt="Brand logo"
+                  className="h-7 w-auto grayscale invert"
+                  loading="lazy"
+                  decoding="async"
+                />
               ))}
             </div>
           </div>
 
           {/* RIGHT VISUALS */}
-          <div className="relative w-full">
-            <div className="relative mx-auto max-w-md h-[520px] pointer-events-none" aria-hidden>
-              <motion.div className="absolute left-4 right-4 top-0 rotate-[-5deg] z-30"
-                initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
+          <div className="relative w-full" aria-hidden>
+            <div className="relative mx-auto max-w-md h-[520px] pointer-events-none">
+              <motion.div
+                className="absolute left-4 right-4 top-0 rotate-[-5deg] z-30"
+                initial={{ opacity: 0, y: 10 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ delay: prefersReducedMotion ? 0 : 0.15 }}
+              >
                 <KpiCard />
               </motion.div>
-              <motion.div className="absolute left-2 right-6 top-[170px] rotate-[5deg] z-20"
-                initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
+              <motion.div
+                className="absolute left-2 right-6 top-[170px] rotate-[5deg] z-20"
+                initial={{ opacity: 0, y: 10 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ delay: prefersReducedMotion ? 0 : 0.3 }}
+              >
                 <SparklineCard />
               </motion.div>
-              <motion.div className="absolute left-6 right-2 bottom-0 z-10"
-                initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.45 }}>
+              <motion.div
+                className="absolute left-6 right-2 bottom-0 z-10"
+                initial={{ opacity: 0, y: 12 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ delay: prefersReducedMotion ? 0 : 0.45 }}
+              >
                 <ChatCard />
               </motion.div>
             </div>
           </div>
         </div>
-      </section>
+      </header>
 
       {/* OUTCOME STRIP */}
       <section className="border-t" style={{ borderColor: BG.line }}>
-        <div className="max-w-7xl mx-auto px-6 py-10 md:py-14 grid grid-cols-1 sm:grid-cols-3 gap-6">
+        <div className="max-w-7xl mx-auto px-6 py-10 md:py-14 grid grid-cols-1 sm:grid-cols-3 gap-6" aria-label="Outcomes">
           {[
             ["Avg reply time", "↓ 42%"],
             ["No-response leads", "↓ 31%"],
             ["Customer rating (NPS)", "4.7 / 5"],
           ].map(([label, stat]) => (
             <div key={label} className="rounded-2xl p-7 border" style={{ background: BG.card, borderColor: BG.line }}>
-              <div className="text-sm mb-2" style={{ color: BG.text60 }}>{label}</div>
-              <div className="text-3xl font-extrabold" style={{ color: BG.gold }}>{stat}</div>
+              <div className="text-sm mb-2" style={{ color: BG.text60 }}>
+                {label}
+              </div>
+              <div className="text-3xl font-extrabold" style={{ color: BG.gold }}>
+                {stat}
+              </div>
             </div>
           ))}
         </div>
       </section>
 
-      {/* PERSONAS */}
-      <section id="features" className="border-t" style={{ borderColor: BG.line }}>
+      {/* PERSONAS / FEATURES */}
+      <section id="features" className="border-t scroll-mt-24" style={{ borderColor: BG.line }} aria-labelledby="features-title">
         <div className="max-w-7xl mx-auto px-6 py-20 md:py-24">
           <div className="text-center">
             <div className="uppercase tracking-widest text-xs font-semibold mb-2" style={{ color: BG.text60 }}>
               Who it’s for
             </div>
-            <h2 className="text-3xl md:text-4xl font-extrabold" style={{ color: BG.gold }}>
+            <h2 id="features-title" className="text-3xl md:text-4xl font-extrabold" style={{ color: BG.gold }}>
               Everything you need to retain clients
             </h2>
             <p className="text-sm mt-2" style={{ color: BG.text60 }}>
@@ -306,7 +547,9 @@ export default function LandingPage() {
             ].map(([title, desc]) => (
               <div key={title} className="rounded-2xl p-7 border" style={{ background: BG.card, borderColor: BG.line }}>
                 <div className="text-lg font-semibold">{title}</div>
-                <div className="text-sm mt-1" style={{ color: BG.text80 }}>{desc}</div>
+                <div className="text-sm mt-1" style={{ color: BG.text80 }}>
+                  {desc}
+                </div>
               </div>
             ))}
           </div>
@@ -314,13 +557,13 @@ export default function LandingPage() {
       </section>
 
       {/* AUTOMATIONS */}
-      <section className="border-t" style={{ borderColor: BG.line }}>
+      <section className="border-t" style={{ borderColor: BG.line }} aria-labelledby="automations-title">
         <div className="max-w-7xl mx-auto px-6 py-20 md:py-24">
           <div className="text-center">
             <div className="uppercase tracking-widest text-xs font-semibold mb-2" style={{ color: BG.text60 }}>
               Automations
             </div>
-            <h2 className="text-3xl md:text-4xl font-extrabold" style={{ color: BG.gold }}>
+            <h2 id="automations-title" className="text-3xl md:text-4xl font-extrabold" style={{ color: BG.gold }}>
               Triggers and actions you can mix & match
             </h2>
             <p className="text-sm mt-2" style={{ color: BG.text60 }}>
@@ -332,9 +575,7 @@ export default function LandingPage() {
               <div className="font-semibold mb-2">Triggers</div>
               <div className="flex flex-wrap gap-2">
                 {["No reply 24h", "New lead", "Missed appointment", "Tag added"].map((t) => (
-                  <span key={t} className="px-3 py-1 rounded-full text-sm" style={{ background: "#0E1013", border: `1px solid ${BG.line}` }}>
-                    {t}
-                  </span>
+                  <Badge key={t}>{t}</Badge>
                 ))}
               </div>
             </div>
@@ -342,9 +583,7 @@ export default function LandingPage() {
               <div className="font-semibold mb-2">Actions</div>
               <div className="flex flex-wrap gap-2">
                 {["WhatsApp template", "Reminder", "Schedule link", "Assign tag", "Email follow-up"].map((a) => (
-                  <span key={a} className="px-3 py-1 rounded-full text-sm" style={{ background: "#0E1013", border: `1px solid ${BG.line}` }}>
-                    {a}
-                  </span>
+                  <Badge key={a}>{a}</Badge>
                 ))}
               </div>
             </div>
@@ -353,13 +592,13 @@ export default function LandingPage() {
       </section>
 
       {/* LIVE DEMO */}
-      <section id="how" className="border-t" style={{ borderColor: BG.line }}>
+      <section id="how" className="border-t scroll-mt-24" style={{ borderColor: BG.line }} aria-labelledby="demo-title">
         <div className="max-w-7xl mx-auto px-6 py-20 md:py-24">
           <div className="text-center">
             <div className="uppercase tracking-widest text-xs font-semibold mb-2" style={{ color: BG.text60 }}>
               See it in action
             </div>
-            <h2 className="text-3xl md:text-4xl font-extrabold" style={{ color: BG.gold }}>
+            <h2 id="demo-title" className="text-3xl md:text-4xl font-extrabold" style={{ color: BG.gold }}>
               Tag → AI Draft → Send → Auto follow-up
             </h2>
           </div>
@@ -369,11 +608,18 @@ export default function LandingPage() {
                 className="w-full rounded-2xl border shadow-lg"
                 style={{ borderColor: BG.line, background: "#0E1013" }}
                 src={DEMO_SRC}
+                poster={DEMO_POSTER}
                 controls
+                preload="metadata"
                 onError={() => setVideoError(true)}
+                aria-label="Product demo video"
               />
             ) : (
-              <div className="rounded-2xl p-10 border text-center" style={{ background: BG.card, borderColor: BG.line }}>
+              <div
+                className="rounded-2xl p-10 border text-center"
+                style={{ background: BG.card, borderColor: BG.line }}
+                role="note"
+              >
                 <div className="text-lg font-semibold mb-2">Demo coming soon</div>
                 <div className="text-sm" style={{ color: BG.text60 }}>
                   Drop your file at <code>public/crm-demo.mp4</code> to show it here.
@@ -385,13 +631,15 @@ export default function LandingPage() {
       </section>
 
       {/* INTEGRATIONS + PRIVACY */}
-      <section className="border-t" style={{ borderColor: BG.line }}>
+      <section className="border-t" style={{ borderColor: BG.line }} aria-labelledby="integrations-title">
         <div className="max-w-7xl mx-auto px-6 py-20 md:py-24 grid grid-cols-1 md:grid-cols-3 gap-8">
           <div className="rounded-2xl p-7 border" style={{ background: BG.card, borderColor: BG.line }}>
             <div className="uppercase tracking-widest text-xs font-semibold mb-2" style={{ color: BG.text60 }}>
               Integrations
             </div>
-            <div className="text-sm mb-4" style={{ color: BG.text80 }}>Connect in &lt; 2 min.</div>
+            <div className="text-sm mb-4" style={{ color: BG.text80 }}>
+              Connect in &lt; 2 min.
+            </div>
             <div className="flex items-center gap-4">
               <Badge>WhatsApp</Badge>
               <Badge>Gmail</Badge>
@@ -404,20 +652,26 @@ export default function LandingPage() {
             </div>
             <div className="text-sm" style={{ color: BG.text80 }}>
               Your data stays in your account. PIPEDA-aware. WhatsApp Cloud API compliant.{" "}
-              <a href="/privacy-policy" className="underline" style={{ color: BG.goldDeep }}>Read the policy</a>.
+              <a href="/privacy-policy" className="underline" style={{ color: BG.goldDeep }}>
+                Read the policy
+              </a>
+              .
+            </div>
+            <div className="mt-6">
+              <Testimonials />
             </div>
           </div>
         </div>
       </section>
 
       {/* COMPARISON GRID */}
-      <section className="border-t" style={{ borderColor: BG.line }}>
+      <section className="border-t" style={{ borderColor: BG.line }} aria-labelledby="compare-title">
         <div className="max-w-7xl mx-auto px-6 py-20 md:py-24">
           <div className="text-center">
             <div className="uppercase tracking-widest text-xs font-semibold mb-2" style={{ color: BG.text60 }}>
               Why RetainAI
             </div>
-            <h2 className="text-3xl md:text-4xl font-extrabold" style={{ color: BG.gold }}>
+            <h2 id="compare-title" className="text-3xl md:text-4xl font-extrabold" style={{ color: BG.gold }}>
               Built for human conversations, not just databases
             </h2>
           </div>
@@ -426,8 +680,12 @@ export default function LandingPage() {
               <thead style={{ background: "#101216" }}>
                 <tr>
                   <th className="text-left p-3 border-r" style={{ borderColor: BG.line }}></th>
-                  <th className="text-left p-3 border-r" style={{ borderColor: BG.line }}>RetainAI</th>
-                  <th className="text-left p-3" style={{ borderColor: BG.line }}>Big CRMs</th>
+                  <th className="text-left p-3 border-r" style={{ borderColor: BG.line }}>
+                    RetainAI
+                  </th>
+                  <th className="text-left p-3" style={{ borderColor: BG.line }}>
+                    Big CRMs
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -440,8 +698,12 @@ export default function LandingPage() {
                 ].map(([row, ours, theirs]) => (
                   <tr key={row} className="border-t" style={{ borderColor: BG.line }}>
                     <td className="p-3 font-medium">{row}</td>
-                    <td className="p-3" style={{ color: BG.gold }}>{ours}</td>
-                    <td className="p-3" style={{ color: BG.text80 }}>{theirs}</td>
+                    <td className="p-3" style={{ color: BG.gold }}>
+                      {ours}
+                    </td>
+                    <td className="p-3" style={{ color: BG.text80 }}>
+                      {theirs}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -451,12 +713,19 @@ export default function LandingPage() {
       </section>
 
       {/* PRICING */}
-      <section id="pricing" className="relative z-[30] isolate border-t" style={{ borderColor: BG.line }}>
+      <section
+        id="pricing"
+        className="relative z-[30] isolate border-t scroll-mt-24"
+        style={{ borderColor: BG.line }}
+        aria-labelledby="pricing-title"
+      >
         <div className="max-w-5xl mx-auto px-6 py-20 md:py-24 text-center">
           <div className="uppercase tracking-widest text-xs font-semibold mb-2" style={{ color: BG.text60 }}>
             Simple pricing
           </div>
-          <h2 className="text-3xl md:text-4xl font-extrabold" style={{ color: BG.gold }}>Choose your plan</h2>
+          <h2 id="pricing-title" className="text-3xl md:text-4xl font-extrabold" style={{ color: BG.gold }}>
+            Choose your plan
+          </h2>
           <p className="text-sm mt-2" style={{ color: BG.text60 }}>
             14-day free trial • Cancel anytime • Keep your data if you cancel.
           </p>
@@ -465,10 +734,14 @@ export default function LandingPage() {
             {/* Standard */}
             <div className="rounded-2xl p-7 border text-left flex flex-col gap-5" style={{ background: BG.card, borderColor: BG.line }}>
               <div>
-                <div className="text-sm mb-2" style={{ color: BG.text60 }}>Standard</div>
+                <div className="text-sm mb-2" style={{ color: BG.text60 }}>
+                  Standard
+                </div>
                 <div className="flex items-end gap-2">
                   <div className="text-4xl font-extrabold">$30</div>
-                  <div className="mb-1 text-sm" style={{ color: BG.text60 }}>/mo</div>
+                  <div className="mb-1 text-sm" style={{ color: BG.text60 }}>
+                    /mo
+                  </div>
                 </div>
               </div>
               <ul className="space-y-2 text-sm" style={{ color: BG.text80 }}>
@@ -478,23 +751,36 @@ export default function LandingPage() {
                 <li>• Lead tagging & notes</li>
               </ul>
               <div className="pt-1">
-                <a href="/signup" className="block w-full px-4 py-3 rounded-xl text-center font-bold border"
-                   style={{ background: "#101216", borderColor: BG.line, color: "#fff" }}>
+                <a
+                  href="/signup"
+                  className="block w-full px-4 py-3 rounded-xl text-center font-bold border"
+                  style={{ background: "#101216", borderColor: BG.line, color: "#fff" }}
+                >
                   Start 14-Day Trial
                 </a>
               </div>
-              <div className="text-xs" style={{ color: BG.text60 }}>Credit card required. Cancel anytime.</div>
+              <div className="text-xs" style={{ color: BG.text60 }}>
+                Credit card required. Cancel anytime.
+              </div>
             </div>
 
             {/* Launch */}
-            <div className="rounded-2xl p-7 border text-left relative overflow-hidden flex flex-col gap-5"
-                 style={{ background: BG.card, borderColor: BG.line }}>
+            <div
+              className="rounded-2xl p-7 border text-left relative overflow-hidden flex flex-col gap-5"
+              style={{ background: BG.card, borderColor: BG.line }}
+            >
               <div className="absolute -top-10 -right-10 w-40 h-40 rounded-full blur-2xl opacity-25" style={{ background: BG.gold }} />
               <div>
-                <div className="text-sm mb-2" style={{ color: BG.text60 }}>Grand Opening</div>
+                <div className="text-sm mb-2" style={{ color: BG.text60 }}>
+                  Grand Opening
+                </div>
                 <div className="flex items-end gap-3">
-                  <div className="text-4xl font-extrabold" style={{ color: BG.gold }}>$20</div>
-                  <div className="mb-1 text-sm" style={{ color: BG.text60 }}>/mo</div>
+                  <div className="text-4xl font-extrabold" style={{ color: BG.gold }}>
+                    $20
+                  </div>
+                  <div className="mb-1 text-sm" style={{ color: BG.text60 }}>
+                    /mo
+                  </div>
                   <div className="line-through text-sm opacity-70">$30</div>
                 </div>
               </div>
@@ -504,12 +790,17 @@ export default function LandingPage() {
                 <li>• Early access features</li>
               </ul>
               <div className="pt-1">
-                <a href="/signup" className="inline-block px-4 py-3 rounded-xl font-extrabold"
-                   style={{ background: BG.gold, color: "#0B0B0C" }}>
+                <a
+                  href="/signup"
+                  className="inline-block px-4 py-3 rounded-xl font-extrabold"
+                  style={{ background: BG.gold, color: "#0B0B0C" }}
+                >
                   Claim $20/mo
                 </a>
               </div>
-              <div className="text-xs" style={{ color: BG.text60 }}>Limited-time launch offer.</div>
+              <div className="text-xs" style={{ color: BG.text60 }}>
+                Limited-time launch offer.
+              </div>
             </div>
           </div>
         </div>
@@ -523,18 +814,7 @@ export default function LandingPage() {
             <div className="uppercase tracking-widest text-xs font-semibold mb-2" style={{ color: BG.text60 }}>
               Results from users
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              {[
-                ["Ariana, Salon", "“Booked 7 extra appointments first week.”"],
-                ["Marco, HVAC", "“No-reply leads finally came back.”"],
-                ["Jade, Coach", "“Replies feel like me. More yes’s.”"],
-              ].map(([name, quote]) => (
-                <div key={name} className="p-6 rounded-2xl border" style={{ background: BG.card, borderColor: BG.line }}>
-                  <div className="font-semibold mb-1">{name}</div>
-                  <div className="text-sm" style={{ color: BG.text80 }}>{quote}</div>
-                </div>
-              ))}
-            </div>
+            <Testimonials />
           </div>
 
           {/* ROI + Book call */}
@@ -543,25 +823,30 @@ export default function LandingPage() {
               ROI mini-calculator
             </div>
             <div className="p-6 rounded-2xl border" style={{ background: BG.card, borderColor: BG.line }}>
-              <label className="text-sm" style={{ color: BG.text80 }}>Leads per week</label>
+              <label className="text-sm" style={{ color: BG.text80 }}>
+                Leads per week
+              </label>
               <input
                 type="number"
                 value={leadsPerWeek}
                 onChange={(e) => setLeadsPerWeek(e.target.value)}
                 className="w-full mt-1 mb-3 px-3 py-2 rounded-lg bg-[#0E1013] border"
                 style={{ borderColor: BG.line, color: "#fff" }}
+                inputMode="numeric"
               />
-              <label className="text-sm" style={{ color: BG.text80 }}>Close rate (%)</label>
+              <label className="text-sm" style={{ color: BG.text80 }}>
+                Close rate (%)
+              </label>
               <input
                 type="number"
                 value={closeRate}
                 onChange={(e) => setCloseRate(e.target.value)}
                 className="w-full mt-1 px-3 py-2 rounded-lg bg-[#0E1013] border"
                 style={{ borderColor: BG.line, color: "#fff" }}
+                inputMode="numeric"
               />
               <ROINumbers leadsPerWeek={leadsPerWeek} closeRate={closeRate} />
-              <a href="/signup" className="mt-4 inline-block px-4 py-3 rounded-xl font-bold"
-                 style={{ background: BG.gold, color: "#0B0B0C" }}>
+              <a href="/signup" className="mt-4 inline-block px-4 py-3 rounded-xl font-bold" style={{ background: BG.gold, color: "#0B0B0C" }}>
                 See it with your leads → Start free
               </a>
             </div>
@@ -572,15 +857,10 @@ export default function LandingPage() {
                 We’ll get you running in under 10 minutes.
               </div>
               <button
-                onClick={() => {
-                  if (window.Calendly) {
-                    window.Calendly.initPopupWidget({ url: BOOKING_URL });
-                  } else {
-                    window.open(BOOKING_URL, "_blank", "noopener,noreferrer");
-                  }
-                }}
+                onClick={openCalendly}
                 className="inline-block px-4 py-2 rounded-xl border"
                 style={{ borderColor: BG.line, color: "#fff", background: "#101216" }}
+                aria-label="Book a 10-minute setup call"
               >
                 Book a 10-min setup call
               </button>
@@ -590,13 +870,15 @@ export default function LandingPage() {
       </section>
 
       {/* FAQ */}
-      <section id="faq" className="border-t" style={{ borderColor: BG.line }}>
+      <section id="faq" className="border-t scroll-mt-24" style={{ borderColor: BG.line }} aria-labelledby="faq-title">
         <div className="max-w-7xl mx-auto px-6 py-20 md:py-24">
           <div className="text-center">
             <div className="uppercase tracking-widest text-xs font-semibold mb-2" style={{ color: BG.text60 }}>
               Answered quickly
             </div>
-            <h2 className="text-3xl md:text-4xl font-extrabold" style={{ color: BG.gold }}>FAQ</h2>
+            <h2 id="faq-title" className="text-3xl md:text-4xl font-extrabold" style={{ color: BG.gold }}>
+              FAQ
+            </h2>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-8">
             {[
@@ -605,26 +887,38 @@ export default function LandingPage() {
               ["Can I import leads later?", "Yes — CSV import and form integrations are supported."],
               ["Is my data private?", "Your data stays in your account. PIPEDA-aware and WhatsApp Cloud API compliant."],
             ].map(([q, a]) => (
-              <div key={q} className="rounded-2xl p-7 border" style={{ background: BG.card, borderColor: BG.line }}>
-                <div className="font-bold mb-2" style={{ color: BG.goldDeep }}>{q}</div>
-                <div className="text-sm" style={{ color: BG.text80 }}>{a}</div>
-              </div>
+              <details key={q} className="rounded-2xl p-7 border" style={{ background: BG.card, borderColor: BG.line }}>
+                <summary className="font-bold cursor-pointer" style={{ color: BG.goldDeep }}>
+                  {q}
+                </summary>
+                <div className="text-sm mt-2" style={{ color: BG.text80 }}>
+                  {a}
+                </div>
+              </details>
             ))}
           </div>
         </div>
       </section>
 
       {/* FOOTER */}
-      <footer className="border-t" style={{ borderColor: BG.line, background: "#0A0B0D" }}>
+      <footer className="border-t" style={{ borderColor: BG.line, background: "#0A0B0D" }} aria-labelledby="footer-title">
         <div className="max-w-7xl mx-auto px-6 py-10 flex flex-col md:flex-row items-center justify-between gap-6">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2" id="footer-title">
             <span className="w-3 h-3 rounded-full" style={{ background: BG.gold }} />
-            <span className="font-black text-xl" style={{ color: BG.gold }}>RetainAI</span>
+            <span className="font-black text-xl" style={{ color: BG.gold }}>
+              RetainAI
+            </span>
           </div>
           <div className="flex gap-4 text-sm" style={{ color: BG.text60 }}>
-            <a href="/privacy-policy" className="hover:opacity-80">Privacy Policy</a>
-            <a href="/terms-of-service" className="hover:opacity-80">Terms of Service</a>
-            <a href="mailto:owner@retainai.ca" className="hover:opacity-80">Contact</a>
+            <a href="/privacy-policy" className="hover:opacity-80">
+              Privacy Policy
+            </a>
+            <a href="/terms-of-service" className="hover:opacity-80">
+              Terms of Service
+            </a>
+            <a href="mailto:owner@retainai.ca" className="hover:opacity-80">
+              Contact
+            </a>
           </div>
         </div>
         <div className="border-t text-center text-xs py-4" style={{ borderColor: BG.line, color: BG.text60 }}>
@@ -633,10 +927,14 @@ export default function LandingPage() {
       </footer>
 
       {/* STICKY MOBILE CTA */}
-      <div className="md:hidden fixed bottom-3 left-3 right-3 z-50">
-        <div className="rounded-2xl shadow-lg flex items-center justify-between px-4 py-3"
-             style={{ background: BG.card, border: `1px solid ${BG.line}` }}>
-          <span className="text-sm" style={{ color: BG.text80 }}>Start free — 14 days</span>
+      <div className="md:hidden fixed bottom-3 left-3 right-3 z-50" role="complementary" aria-label="Start free CTA">
+        <div
+          className="rounded-2xl shadow-lg flex items-center justify-between px-4 py-3"
+          style={{ background: BG.card, border: `1px solid ${BG.line}` }}
+        >
+          <span className="text-sm" style={{ color: BG.text80 }}>
+            Start free — 14 days
+          </span>
           <a href="/signup" className="px-4 py-2 rounded-xl font-bold" style={{ background: BG.gold, color: "#0B0B0C" }}>
             Start
           </a>

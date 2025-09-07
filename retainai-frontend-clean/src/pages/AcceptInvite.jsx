@@ -1,12 +1,26 @@
 // src/pages/AcceptInvite.jsx
 import React, { useEffect, useState } from "react";
 
+// ---- API base (CRA + Vite safe) ----
+const API_BASE =
+  (typeof import.meta !== "undefined" &&
+    import.meta.env &&
+    import.meta.env.VITE_API_BASE_URL) ||
+  (typeof process !== "undefined" &&
+    process.env &&
+    process.env.REACT_APP_API_BASE) ||
+  (typeof window !== "undefined" &&
+  window.location &&
+  window.location.hostname.includes("localhost")
+    ? "http://localhost:5000"
+    : "https://retainai-app.onrender.com");
+
 export default function AcceptInvite() {
   // CRA/Webpack-friendly env detection (no import.meta)
   const apiBase =
     (typeof window !== "undefined" && window.__API_BASE__) ||
     process.env.REACT_APP_API_BASE ||
-    "http://localhost:5000";
+    API_BASE;
 
   // ===== Inline CSS (scoped) =====
   const css = `

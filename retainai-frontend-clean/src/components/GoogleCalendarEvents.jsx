@@ -1,9 +1,17 @@
+// src/components/GoogleCalendarEvents.jsx
 import React, { useState, useEffect, useRef } from "react";
 import { SiGooglecalendar } from "react-icons/si";
 
-// Key for storing selected calendar per user in localStorage
+// Per-user localStorage key for selected calendar
 function getUserCalKey(email) {
   return `retainai_selected_calendar_${email}`;
+}
+
+function chooseInitialCalendarId(calendars = [], savedId) {
+  if (!Array.isArray(calendars) || calendars.length === 0) return "";
+  if (savedId && calendars.some((c) => c.id === savedId)) return savedId;
+  const primary = calendars.find((c) => c.primary);
+  return (primary && primary.id) || calendars[0].id || "";
 }
 
 export default function GoogleCalendarEvents({
@@ -17,131 +25,170 @@ export default function GoogleCalendarEvents({
   const [calendars, setCalendars] = useState([]);
   const [calendarId, setCalendarId] = useState("");
   const [error, setError] = useState("");
-  const [authUrl, setAuthUrl] = useState("");
-  const pollingRef = useRef();
 
-  // On mount: check Google connection and available calendars
+  const pollingRef = useRef(null);
+
+  // Reset state when user changes
   useEffect(() => {
-    if (!user?.email) return;
-    setLoading(true);
-    fetch(`/api/google/status/${encodeURIComponent(user.email)}`)
-      .then(res => res.json())
-      .then(data => {
-        setConnected(!!data.connected);
-        setCalendars(data.calendars || []);
-        // Restore previously selected calendar, or default to primary
-        const savedId = localStorage.getItem(getUserCalKey(user.email));
-        const fallbackId =
-          data.calendars?.find(c => c.primary)?.id ||
-          (data.calendars?.[0]?.id ?? "");
-        setCalendarId(
-          savedId && data.calendars?.some(c => c.id === savedId)
-            ? savedId
-            : fallbackId
-        );
-        setError("");
-        setLoading(false);
-        if (onStatus) onStatus(data.connected ? "loaded" : "not_connected");
-      })
-      .catch(() => {
-        setError("Failed to check Google connection.");
-        setLoading(false);
-        if (onStatus) onStatus("error");
-      });
-    // eslint-disable-next-line
+    if (!user?.email) {
+      setConnected(false);
+      setCalendars([]);
+      setCalendarId("");
+      setError("");
+      if (pollingRef.current) clearInterval(pollingRef.current);
+      return;
+    }
   }, [user?.email]);
 
-  // Save calendarId to localStorage and parent on change
+  // Initial status + calendars load
+  useEffect(() => {
+    if (!user?.email) return;
+    (async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/google/status/${encodeURIComponent(user.email)}`);
+        const data = await res.json();
+        const isConnected = !!data.connected;
+        const list = Array.isArray(data.calendars) ? data.calendars : [];
+        setConnected(isConnected);
+        setCalendars(list);
+
+        const saved = localStorage.getItem(getUserCalKey(user.email));
+        const initial = chooseInitialCalendarId(list, saved);
+        setCalendarId(initial);
+
+        setError("");
+        if (onStatus) onStatus(isConnected ? "loaded" : "not_connected");
+        if (initial && onCalendarChange) onCalendarChange(initial);
+      } catch {
+        setError("Failed to check Google connection.");
+        if (onStatus) onStatus("error");
+      } finally {
+        setLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.email]);
+
+  // Persist selection + notify parent
   useEffect(() => {
     if (user?.email && calendarId) {
       localStorage.setItem(getUserCalKey(user.email), calendarId);
-      if (onCalendarChange) onCalendarChange(calendarId); // <--- This lets Calendar tab react to changes!
+      if (onCalendarChange) onCalendarChange(calendarId);
     }
-    // eslint-disable-next-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [calendarId, user?.email]);
 
-  // Get Google OAuth URL
-  const fetchAuthUrl = async () => {
+  // ---- Auth helpers ----
+  async function fetchAuthUrl() {
+    if (!user?.email) return "";
+    try {
+      const res = await fetch(
+        `/api/google/auth-url?user_email=${encodeURIComponent(user.email)}`
+      );
+      const data = await res.json();
+      return data?.url || "";
+    } catch {
+      return "";
+    }
+  }
+
+  // Connect flow (popup + polling)
+  const handleConnect = async () => {
     if (!user?.email) return;
     setLoading(true);
     setError("");
-    try {
-      const res = await fetch(`/api/google/auth-url?user_email=${encodeURIComponent(user.email)}`);
-      const data = await res.json();
-      if (data.url) setAuthUrl(data.url);
-      else setError("Failed to get Google auth URL.");
-    } catch {
-      setError("Failed to get Google auth URL.");
-    }
-    setLoading(false);
-  };
 
-  // Start connection popup, poll for completion
-  const handleConnect = async () => {
-    await fetchAuthUrl();
-    if (authUrl) {
-      setLoading(true);
-      const popup = window.open(authUrl, "googleConnect", "width=500,height=700");
-      let pollCount = 0;
-      pollingRef.current = setInterval(async () => {
-        pollCount++;
-        if (pollCount > 60 || !popup || popup.closed) {
-          clearInterval(pollingRef.current);
-          setLoading(false);
-          return;
-        }
-        try {
-          const res = await fetch(`/api/google/status/${encodeURIComponent(user.email)}`);
-          const data = await res.json();
-          if (data.connected) {
-            clearInterval(pollingRef.current);
-            try { popup.close(); } catch {}
-            setConnected(true);
-            setCalendars(data.calendars || []);
-            // Restore selection or default to primary
-            const savedId = localStorage.getItem(getUserCalKey(user.email));
-            const fallbackId =
-              data.calendars?.find(c => c.primary)?.id ||
-              (data.calendars?.[0]?.id ?? "");
-            setCalendarId(
-              savedId && data.calendars?.some(c => c.id === savedId)
-                ? savedId
-                : fallbackId
-            );
-            setLoading(false);
-            setError("");
-            if (onStatus) onStatus("loaded");
-          }
-        } catch {/* ignore polling errors */}
-      }, 1000);
+    const url = await fetchAuthUrl();
+    if (!url) {
+      setLoading(false);
+      setError("Failed to get Google auth URL.");
+      return;
     }
+
+    const popup = window.open(url, "googleConnect", "width=500,height=700");
+    let pollCount = 0;
+
+    // Clean existing interval if any
+    if (pollingRef.current) clearInterval(pollingRef.current);
+
+    pollingRef.current = setInterval(async () => {
+      pollCount++;
+      if (pollCount > 60 || !popup || popup.closed) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+        setLoading(false);
+        return;
+      }
+      try {
+        const res = await fetch(
+          `/api/google/status/${encodeURIComponent(user.email)}`
+        );
+        const data = await res.json();
+        if (data.connected) {
+          clearInterval(pollingRef.current);
+          pollingRef.current = null;
+          try {
+            popup.close();
+          } catch {}
+          const list = Array.isArray(data.calendars) ? data.calendars : [];
+          const saved = localStorage.getItem(getUserCalKey(user.email));
+          const initial = chooseInitialCalendarId(list, saved);
+
+          setConnected(true);
+          setCalendars(list);
+          setCalendarId(initial);
+          setLoading(false);
+          setError("");
+          if (onStatus) onStatus("loaded");
+          if (initial && onCalendarChange) onCalendarChange(initial);
+        }
+      } catch {
+        // ignore polling errors
+      }
+    }, 1000);
   };
 
   // Disconnect
   const handleDisconnect = async () => {
+    if (!user?.email) return;
     setLoading(true);
     setError("");
-    await fetch(`/api/google/disconnect/${encodeURIComponent(user.email)}`, { method: "POST" });
+    try {
+      await fetch(`/api/google/disconnect/${encodeURIComponent(user.email)}`, {
+        method: "POST",
+      });
+    } catch {
+      // swallow
+    }
     setConnected(false);
     setCalendars([]);
     setCalendarId("");
     setLoading(false);
-    if (onEvents) onEvents([]);
+    if (onEvents) onEvents([]); // clear parent events
     if (onStatus) onStatus("not_connected");
-    if (pollingRef.current) clearInterval(pollingRef.current);
-    if (user?.email) localStorage.removeItem(getUserCalKey(user.email));
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+    localStorage.removeItem(getUserCalKey(user.email));
   };
 
-  // Clean up polling
+  // Cleanup on unmount
   useEffect(() => {
-    return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
   }, []);
 
-  // UI
+  // ---- UI ----
   return (
     <div className="integration-card-inner">
       <div className="integration-center" style={{ alignItems: "center" }}>
-        <SiGooglecalendar size={38} style={{ color: "#4885ed", marginBottom: 12 }} />
+        <SiGooglecalendar
+          size={38}
+          style={{ color: "#4885ed", marginBottom: 12 }}
+        />
         <div className="integration-title" style={{ marginBottom: 3 }}>
           Google Calendar
         </div>
@@ -149,7 +196,6 @@ export default function GoogleCalendarEvents({
           Connect your Google Calendar for seamless sync.
         </div>
 
-        {/* Controls depending on state */}
         {!connected ? (
           <>
             <button
@@ -162,7 +208,8 @@ export default function GoogleCalendarEvents({
                 background: "#4885ed",
                 color: "#fff",
                 border: "none",
-                boxShadow: "0 2px 7px rgba(72,133,237,0.08)"
+                boxShadow: "0 2px 7px rgba(72,133,237,0.08)",
+                opacity: loading ? 0.7 : 1,
               }}
             >
               {loading ? "Connecting…" : "Connect Google Calendar"}
@@ -181,7 +228,10 @@ export default function GoogleCalendarEvents({
               }}
             >
               <span className="integration-dot" />
-              <span className="integration-connected" style={{ marginRight: 10 }}>
+              <span
+                className="integration-connected"
+                style={{ marginRight: 10 }}
+              >
                 Connected
               </span>
               <button
@@ -194,12 +244,14 @@ export default function GoogleCalendarEvents({
                   background: "#191919",
                   color: "#4885ed",
                   border: "2px solid #4885ed",
-                  boxShadow: "none"
+                  boxShadow: "none",
+                  opacity: loading ? 0.7 : 1,
                 }}
               >
                 Disconnect
               </button>
             </div>
+
             {calendars.length > 0 && (
               <div style={{ width: "100%", marginBottom: 10 }}>
                 <label
@@ -209,26 +261,33 @@ export default function GoogleCalendarEvents({
                     fontSize: "1em",
                     marginRight: 8,
                     display: "block",
-                    textAlign: "center"
+                    textAlign: "center",
                   }}
                 >
                   Calendar:
                 </label>
-                <div style={{ display: "flex", justifyContent: "center", width: "100%" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "center",
+                    width: "100%",
+                  }}
+                >
                   <select
                     className="integration-select"
                     value={calendarId}
-                    onChange={e => setCalendarId(e.target.value)}
+                    onChange={(e) => setCalendarId(e.target.value)}
                     style={{
                       minWidth: 240,
                       maxWidth: 330,
                       margin: "0 auto",
-                      textAlign: "center"
+                      textAlign: "center",
                     }}
                   >
-                    {calendars.map(cal => (
+                    {calendars.map((cal) => (
                       <option key={cal.id} value={cal.id}>
-                        {cal.summary}{cal.primary ? " (Primary)" : ""}
+                        {cal.summary}
+                        {cal.primary ? " (Primary)" : ""}
                       </option>
                     ))}
                   </select>

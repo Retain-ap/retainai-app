@@ -1,5 +1,5 @@
 // File: frontend/src/components/Invoices.jsx
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { EyeIcon, BellIcon } from "@heroicons/react/24/outline";
 
 const CURRENCIES = ["usd", "cad", "eur", "gbp", "aud"]; // short list
@@ -17,7 +17,13 @@ export default function Invoices({ user, leads }) {
     currency: "usd",
   });
   const [sending, setSending] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+
+  const emailOk = useMemo(
+    () => (val) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(val || "").trim()),
+    []
+  );
 
   // Load Stripe account (default_currency)
   useEffect(() => {
@@ -43,12 +49,15 @@ export default function Invoices({ user, leads }) {
   const loadInvoices = useCallback(async () => {
     if (!user?.email) return;
     try {
+      setLoading(true);
       const res = await fetch(`/api/stripe/invoices?user_email=${encodeURIComponent(user.email)}`);
-      const { invoices = [] } = await res.json();
-      setInvoices(invoices);
+      const j = await res.json();
+      setInvoices(Array.isArray(j?.invoices) ? j.invoices : []);
     } catch (err) {
       console.error("Failed to load invoices", err);
       setInvoices([]);
+    } finally {
+      setLoading(false);
     }
   }, [user?.email]);
 
@@ -77,20 +86,25 @@ export default function Invoices({ user, leads }) {
     setShowModal(true);
   };
 
-  const fmt = (amount, currency) => {
-    const code = String(currency || account?.default_currency || "usd").toUpperCase();
-    const safe = typeof amount === "number" ? amount : Number(amount || 0);
-    try {
-      return new Intl.NumberFormat(undefined, {
-        style: "currency",
-        currency: code,
-        currencyDisplay: "narrowSymbol",
-        maximumFractionDigits: 2,
-      }).format(safe);
-    } catch {
-      return `${code} ${safe.toFixed?.(2) ?? safe}`;
-    }
-  };
+  // Currency formatter w/ “likely cents” auto-conversion for integer values >= 1000
+  const fmt = useMemo(() => {
+    return (amount, currency) => {
+      const code = String(currency || account?.default_currency || "usd").toUpperCase();
+      const n = Number(amount);
+      if (!isFinite(n)) return `${code} —`;
+      const asMajor = Number.isInteger(n) && Math.abs(n) >= 1000 ? n / 100 : n;
+      try {
+        return new Intl.NumberFormat(undefined, {
+          style: "currency",
+          currency: code,
+          currencyDisplay: "narrowSymbol",
+          maximumFractionDigits: 2,
+        }).format(asMajor);
+      } catch {
+        return `${code} ${asMajor.toFixed?.(2) ?? asMajor}`;
+      }
+    };
+  }, [account?.default_currency]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -101,8 +115,18 @@ export default function Invoices({ user, leads }) {
     const price = parseFloat(form.price || 0);
     const calculatedAmount = price * quantity;
 
-    if (!form.customer_name || !form.customer_email || !form.item_name || !form.price || isNaN(calculatedAmount) || calculatedAmount <= 0) {
-      setMessage("❌ Please fill all fields with valid data.");
+    if (!form.customer_name || !form.customer_email || !form.item_name || !form.price) {
+      setMessage("❌ Please fill all fields.");
+      setSending(false);
+      return;
+    }
+    if (!emailOk(form.customer_email)) {
+      setMessage("❌ Please enter a valid customer email.");
+      setSending(false);
+      return;
+    }
+    if (!isFinite(calculatedAmount) || calculatedAmount <= 0) {
+      setMessage("❌ Amount must be a positive number.");
       setSending(false);
       return;
     }
@@ -113,11 +137,11 @@ export default function Invoices({ user, leads }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           user_email: user.email,
-          customer_name: form.customer_name,
-          customer_email: form.customer_email,
-          amount: calculatedAmount,
-          description: form.item_name,
-          currency: form.currency,
+          customer_name: form.customer_name.trim(),
+          customer_email: form.customer_email.trim(),
+          amount: calculatedAmount, // server decides major vs minor unit
+          description: form.item_name.trim(),
+          currency: (form.currency || "usd").toLowerCase(),
           quantity,
           unit_amount: price,
         }),
@@ -125,7 +149,6 @@ export default function Invoices({ user, leads }) {
       const data = await res.json();
 
       if (data.success) {
-        // Prefer server-refreshed list; otherwise prepend single invoice; otherwise fallback to GET
         if (Array.isArray(data.invoices)) {
           setInvoices(data.invoices);
         } else if (data.invoice) {
@@ -134,10 +157,8 @@ export default function Invoices({ user, leads }) {
           await loadInvoices();
         }
 
-        const shownAmt = data.amount_total ?? data.amount_due;
-        setMessage(
-          `✅ Invoice created${shownAmt ? ` for ${fmt(shownAmt, data.currency)}` : "!"}`
-        );
+        const shownAmt = data.amount_total ?? data.amount_due ?? calculatedAmount;
+        setMessage(`✅ Invoice created for ${fmt(shownAmt, data.currency || form.currency)}`);
 
         setShowModal(false);
         setForm({
@@ -146,7 +167,7 @@ export default function Invoices({ user, leads }) {
           item_name: "",
           price: "",
           quantity: 1,
-          currency: account?.default_currency || "usd",
+          currency: account?.default_currency?.toLowerCase?.() || "usd",
         });
       } else {
         const err = String(data.error || "Could not create invoice.");
@@ -157,8 +178,8 @@ export default function Invoices({ user, leads }) {
           setMessage(`❌ ${err}`);
         }
       }
-    } catch (e) {
-      console.error(e);
+    } catch (e2) {
+      console.error(e2);
       setMessage("❌ Server error");
     } finally {
       setSending(false);
@@ -166,7 +187,7 @@ export default function Invoices({ user, leads }) {
   };
 
   const handleView = (url) => {
-    if (url) window.open(url, "_blank");
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
   };
 
   const handleResend = async (inv) => {
@@ -192,7 +213,13 @@ export default function Invoices({ user, leads }) {
           <h2 style={styles.title}>Invoices</h2>
           <p style={styles.subtitle}>Create, view, and remind leads about invoices.</p>
         </div>
-        <button style={styles.newInvoiceBtn} onClick={() => setShowModal(true)}>
+        <button
+          style={styles.newInvoiceBtn}
+          onClick={() => {
+            setMessage("");
+            setShowModal(true);
+          }}
+        >
           + New Invoice
         </button>
       </div>
@@ -210,39 +237,58 @@ export default function Invoices({ user, leads }) {
 
       {message && <div style={message.startsWith("✅") ? styles.successMsg : styles.errorMsg}>{message}</div>}
 
-      <div style={styles.tableWrapper}>
-        <table style={styles.table}>
-          <thead style={styles.thead}>
-            <tr>
-              {["Customer", "Amount", "Due", "Status", "Actions"].map((h) => (
-                <th key={h} style={styles.th}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody style={styles.tbody}>
-            {invoices.map((inv) => (
-              <tr key={inv.id} style={styles.tr}>
-                <td style={styles.td}>{inv.customer_name || "-"}</td>
-                <td style={styles.td}>
-                  {typeof inv.amount_due === "number"
-                    ? fmt(inv.amount_due, inv.currency || account?.default_currency || "usd")
-                    : "—"}
-                </td>
-                <td style={styles.td}>
-                  {inv.due_date ? new Date(inv.due_date * 1000).toLocaleDateString() : "—"}
-                </td>
-                <td style={{ ...styles.td, color: inv.status === "paid" ? "#38ff98" : "#f7cb53", textTransform: "capitalize" }}>
-                  {inv.status}
-                </td>
-                <td style={{ ...styles.td, display: "flex", gap: 12 }}>
-                  <EyeIcon style={styles.icon} onClick={() => handleView(inv.invoice_url)} />
-                  <BellIcon style={styles.icon} onClick={() => handleResend(inv)} />
-                </td>
+      {loading ? (
+        <div style={{ color: "#bbb", padding: 12 }}>Loading invoices…</div>
+      ) : (
+        <div style={styles.tableWrapper}>
+          <table style={styles.table}>
+            <thead style={styles.thead}>
+              <tr>
+                {["Customer", "Amount", "Due", "Status", "Actions"].map((h) => (
+                  <th key={h} style={styles.th}>{h}</th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody style={styles.tbody}>
+              {invoices.map((inv) => (
+                <tr key={inv.id} style={styles.tr}>
+                  <td style={styles.td}>{inv.customer_name || "-"}</td>
+                  <td style={styles.td}>
+                    {typeof inv.amount_due === "number"
+                      ? fmt(inv.amount_due, inv.currency || account?.default_currency || "usd")
+                      : "—"}
+                  </td>
+                  <td style={styles.td}>
+                    {inv.due_date ? new Date(inv.due_date * 1000).toLocaleDateString() : "—"}
+                  </td>
+                  <td style={{ ...styles.td, color: inv.status === "paid" ? "#38ff98" : "#f7cb53", textTransform: "capitalize" }}>
+                    {inv.status}
+                  </td>
+                  <td style={{ ...styles.td, display: "flex", gap: 12 }}>
+                    <EyeIcon
+                      title="View invoice"
+                      style={styles.icon}
+                      role="button"
+                      onClick={() => handleView(inv.invoice_url)}
+                    />
+                    <BellIcon
+                      title="Resend invoice email"
+                      style={styles.icon}
+                      role="button"
+                      onClick={() => handleResend(inv)}
+                    />
+                  </td>
+                </tr>
+              ))}
+              {invoices.length === 0 && (
+                <tr>
+                  <td colSpan={5} style={{ ...styles.td, color: "#888" }}>No invoices yet.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {showModal && (
         <div style={styles.modalBg} onClick={() => setShowModal(false)}>

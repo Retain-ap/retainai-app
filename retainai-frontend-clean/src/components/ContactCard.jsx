@@ -1,44 +1,164 @@
-import React from 'react';
+// src/components/ContactCard.jsx
+import React from "react";
 
-const ContactCard = ({ client, onFollowUp }) => {
-  const { name, email, lastContacted, tags, mood } = client;
+/* RetainAI theme */
+const BG = "#181a1b";
+const CARD = "#232323";
+const BORDER = "#2a2a2a";
+const TEXT = "#e9edef";
+const SUBTEXT = "#9fb0bb";
+const GOLD = "#f7cb53";
 
-  const daysSinceContact = Math.floor(
-    (Date.now() - new Date(lastContacted)) / (1000 * 60 * 60 * 24)
-  );
+function parseDateLike(v) {
+  if (!v) return null;
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
+}
 
-  const getWarmth = () => {
-    if (daysSinceContact < 5) return '🟢 Fresh';
-    if (daysSinceContact < 10) return '🟡 Warming Up';
-    return '🔴 Cold';
-  };
+function daysBetween(a, b) {
+  const ms = a.getTime() - b.getTime();
+  return Math.floor(ms / 86400000);
+}
+
+function warmthLabel(days) {
+  if (days == null) return "⚪️ New";
+  if (days < 5) return "🟢 Fresh";
+  if (days < 10) return "🟡 Warming Up";
+  return "🔴 Cold";
+}
+
+export default function ContactCard({
+  client = {},
+  onFollowUp,
+  className = "",
+}) {
+  const {
+    name = "(No name)",
+    email = "",
+    tags = [],
+    mood = "",
+  } = client;
+
+  // accept multiple backend shapes
+  const last =
+    client.last_contacted || client.lastContacted || client.createdAt || null;
+  const lastDt = parseDateLike(last);
+  const days = lastDt ? daysBetween(new Date(), lastDt) : null;
 
   return (
-    <div className="bg-white dark:bg-[#111] border border-gray-300 dark:border-gray-700 p-4 rounded-xl shadow-md max-w-md">
-      <div className="flex justify-between items-center">
-        <h3 className="text-xl font-bold text-white">{name}</h3>
-        <span className="text-sm text-gray-400">{getWarmth()}</span>
+    <div
+      className={`max-w-md rounded-xl shadow-md ${className}`}
+      style={{
+        background: CARD,
+        border: `1px solid ${BORDER}`,
+        padding: 16,
+      }}
+    >
+      {/* Header */}
+      <div
+        style={{ display: "flex", justifyContent: "space-between", gap: 12 }}
+      >
+        <h3
+          style={{
+            color: TEXT,
+            fontWeight: 900,
+            fontSize: 20,
+            margin: 0,
+            lineHeight: 1.2,
+          }}
+        >
+          {name}
+        </h3>
+        <span
+          title={
+            days == null
+              ? "No contact yet"
+              : `${days} day${days === 1 ? "" : "s"} since last contact`
+          }
+          style={{ color: SUBTEXT, fontWeight: 800, fontSize: 12 }}
+        >
+          {warmthLabel(days)}
+        </span>
       </div>
-      <p className="text-sm text-gray-400">{email}</p>
-      <p className="mt-1 text-sm text-gray-300">Mood: {mood || 'Unknown'}</p>
-      <div className="mt-2 flex flex-wrap gap-2">
-        {tags?.map((tag, i) => (
-          <span key={i} className="bg-gold-500 text-black text-xs font-semibold px-2 py-1 rounded-full">
+
+      {/* Email */}
+      <div style={{ marginTop: 4 }}>
+        {email ? (
+          <a
+            href={`mailto:${email}`}
+            style={{
+              color: SUBTEXT,
+              fontSize: 14,
+              textDecoration: "none",
+              wordBreak: "break-all",
+            }}
+          >
+            {email}
+          </a>
+        ) : (
+          <span style={{ color: SUBTEXT, fontSize: 14 }}>No email</span>
+        )}
+      </div>
+
+      {/* Mood */}
+      <div style={{ marginTop: 6, color: SUBTEXT, fontSize: 14 }}>
+        Mood:{" "}
+        <span style={{ color: TEXT, fontWeight: 700 }}>
+          {mood || "Unknown"}
+        </span>
+      </div>
+
+      {/* Tags */}
+      <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {(Array.isArray(tags) ? tags : []).map((tag, i) => (
+          <span
+            key={`${tag}-${i}`}
+            style={{
+              background: GOLD,
+              color: "#111",
+              fontSize: 12,
+              fontWeight: 800,
+              padding: "4px 8px",
+              borderRadius: 999,
+            }}
+          >
             {tag}
           </span>
         ))}
+        {!tags?.length && (
+          <span style={{ color: SUBTEXT, fontSize: 12 }}>No tags</span>
+        )}
       </div>
-      <p className="mt-2 text-xs text-gray-500">
-        Last contacted: {new Date(lastContacted).toLocaleDateString()}
-      </p>
+
+      {/* Last contacted */}
+      <div style={{ marginTop: 10, color: SUBTEXT, fontSize: 12 }}>
+        Last contacted:{" "}
+        <span style={{ color: TEXT, fontWeight: 700 }}>
+          {lastDt ? lastDt.toLocaleDateString() : "Never"}
+        </span>
+      </div>
+
+      {/* CTA */}
       <button
-        onClick={() => onFollowUp(client)}
-        className="mt-4 w-full bg-gold-600 hover:bg-gold-700 text-black font-bold py-2 px-4 rounded-xl"
+        onClick={() => onFollowUp && onFollowUp(client)}
+        disabled={!onFollowUp}
+        style={{
+          marginTop: 14,
+          width: "100%",
+          background: GOLD,
+          color: "#111",
+          fontWeight: 900,
+          border: "none",
+          borderRadius: 12,
+          padding: "10px 14px",
+          cursor: onFollowUp ? "pointer" : "not-allowed",
+          boxShadow: "0 2px 10px rgba(0,0,0,.25)",
+        }}
+        aria-label="Suggest follow-up"
+        title={onFollowUp ? "Suggest follow-up" : "No handler provided"}
       >
         ✉️ Suggest Follow-Up
       </button>
     </div>
   );
-};
-
-export default ContactCard;
+}

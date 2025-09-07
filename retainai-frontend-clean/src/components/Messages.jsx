@@ -1,5 +1,5 @@
 // src/components/Messages.jsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SiWhatsapp } from "react-icons/si";
 
 /** ===== THEME ===== */
@@ -17,6 +17,14 @@ const C = {
 };
 const PANEL_H = "72vh";
 
+/** ===== API BASE (Vite, CRA, Local, Prod) ===== */
+const API_BASE =
+  (typeof import.meta !== "undefined" && import.meta.env?.VITE_API_BASE_URL) ||
+  (typeof process !== "undefined" && process.env?.REACT_APP_API_BASE) ||
+  (typeof window !== "undefined" && window.location.hostname.includes("localhost")
+    ? "http://localhost:5000"
+    : "https://retainai-app.onrender.com");
+
 /** ===== HELPERS ===== */
 // Strip AI/system headers, template echo, and any "it's/it’s/this is <name> from|at <biz> —|–|-|:" intro anywhere
 function cleanAIText(t) {
@@ -31,18 +39,18 @@ function cleanAIText(t) {
 
   // 2) remove intro anywhere (iteratively); keep the leading delimiter if present
   const introAnywhere = new RegExp(
-    String.raw`(^|[\s]*[,;:\-\u2013\u2014]\s*)` +        // optional delimiter we keep
-    String.raw`(?:it'?s|it\u2019s|this\s+is)\s+` +       // it's / it’s / this is
-    String.raw`[^,\n\r;:\-\u2013\u2014]{1,60}\s+` +      // name part
-    String.raw`(?:from|at)\s+` +                         // from/at
-    String.raw`[^,\n\r;:\-\u2013\u2014]{1,120}\s*` +     // business
-    String.raw`[\-\u2013\u2014:]\s*`,                    // end punct
+    String.raw`(^|[\s]*[,;:\-\u2013\u2014]\s*)` + // optional delimiter we keep
+      String.raw`(?:it'?s|it\u2019s|this\s+is)\s+` + // it's / it’s / this is
+      String.raw`[^,\n\r;:\-\u2013\u2014]{1,60}\s+` + // name part
+      String.raw`(?:from|at)\s+` + // from/at
+      String.raw`[^,\n\r;:\-\u2013\u2014]{1,120}\s*` + // business
+      String.raw`[\-\u2013\u2014:]\s*`, // end punct
     "gi"
   );
   let prev = null;
   while (prev !== s) {
     prev = s;
-    s = s.replace(introAnywhere, (_m, keep) => (keep || ""));
+    s = s.replace(introAnywhere, (_m, keep) => keep || "");
   }
 
   // 3) tidy
@@ -90,10 +98,16 @@ const toUiLang = (api) => {
 };
 
 /* simple cross-tab ping */
-const ping = (name) => window.dispatchEvent(new Event(name));
+const ping = (name) => {
+  try {
+    window.dispatchEvent(new Event(name));
+  } catch {}
+};
 
 /** ===== light NLP for appointment text ===== */
-function pad2(n) { return String(n).padStart(2, "0"); }
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
 function nextDow(from, targetDow, allowToday = false) {
   const d = new Date(from.getFullYear(), from.getMonth(), from.getDate());
   const curr = d.getDay();
@@ -111,7 +125,9 @@ function thisOrNextDow(from, targetDow) {
   d.setDate(d.getDate() + delta);
   return d;
 }
-function toISODate(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+function toISODate(d) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
 function parseApptFromText(text) {
   if (!text) return null;
   const t = text.toLowerCase();
@@ -179,14 +195,22 @@ const SUG_KEYS = (email) => ({
   consumed: `msg_suggestions_consumed_${email || "anon"}`,
 });
 const loadJSON = (k, fallback) => {
-  try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
+  try {
+    const v = localStorage.getItem(k);
+    return v ? JSON.parse(v) : fallback;
+  } catch {
+    return fallback;
+  }
 };
-const saveJSON = (k, obj) => { try { localStorage.setItem(k, JSON.stringify(obj || {})); } catch {} };
+const saveJSON = (k, obj) => {
+  try {
+    localStorage.setItem(k, JSON.stringify(obj || {}));
+  } catch {}
+};
 const sigForSuggestion = (leadId, sug) => `${String(leadId || "lead")}|${sug?.date || ""}|${sug?.time || ""}`;
 
 /** ===== Automation log persistence ===== */
-const AUTO_LOG_KEY = (userEmail, leadId) =>
-  `auto_log_${(userEmail || "anon").toLowerCase()}_${String(leadId || "lead")}`;
+const AUTO_LOG_KEY = (userEmail, leadId) => `auto_log_${(userEmail || "anon").toLowerCase()}_${String(leadId || "lead")}`;
 
 /** ===== Param inference for ANY template ===== */
 const FIRSTNAME = (s = "") => String(s).trim().split(/\s+/)[0] || "";
@@ -216,49 +240,64 @@ function inferParamKindsFromBody(bodyText, count) {
 
     // Heuristics
     if (/(^|\s)(hi|hello|hey|dear)\s*$/.test(L) || /(client|customer|name)\s*$/.test(L)) {
-      kinds[i - 1] = "lead_name"; continue;
+      kinds[i - 1] = "lead_name";
+      continue;
     }
     if (/(i'?m|i am|this is)\s*$/.test(L)) {
-      kinds[i - 1] = "user_name"; continue;
+      kinds[i - 1] = "user_name";
+      continue;
     }
     if (/(from|at)\s*$/.test(L) || /^(\s*(from|at)\b)/.test(R)) {
-      kinds[i - 1] = "business"; continue;
+      kinds[i - 1] = "business";
+      continue;
     }
     if (/\b(date|day)\b/.test(L + " " + R)) {
-      kinds[i - 1] = "date"; continue;
+      kinds[i - 1] = "date";
+      continue;
     }
     if (/\b(time|slot)\b/.test(L + " " + R)) {
-      kinds[i - 1] = "time"; continue;
+      kinds[i - 1] = "time";
+      continue;
     }
     if (/\b(location|address|studio|office)\b/.test(L + " " + R)) {
-      kinds[i - 1] = "location"; continue;
+      kinds[i - 1] = "location";
+      continue;
     }
     if (/\b(service|treatment|package)\b/.test(L + " " + R)) {
-      kinds[i - 1] = "service"; continue;
+      kinds[i - 1] = "service";
+      continue;
     }
     if (/\b(price|quote|budget)\b/.test(L + " " + R)) {
-      kinds[i - 1] = "price"; continue;
+      kinds[i - 1] = "price";
+      continue;
     }
     if (/\bemail\b/.test(L + " " + R)) {
-      kinds[i - 1] = "email"; continue;
+      kinds[i - 1] = "email";
+      continue;
     }
     if (/\bphone|number\b/.test(L + " " + R)) {
-      kinds[i - 1] = "phone"; continue;
+      kinds[i - 1] = "phone";
+      continue;
     }
-
-    // Unknown — leave null and we’ll apply index-based defaults
   }
 
   // Fill remaining nulls by index-based sane defaults
   for (let i = 0; i < kinds.length; i++) {
     if (!kinds[i]) {
       kinds[i] =
-        i === 0 ? "lead_name" :
-        i === 1 ? "user_name" :
-        i === 2 ? "business" :
-        i === 3 ? "details" :
-        i === 4 ? "location" :
-        i === 5 ? "email" : "details";
+        i === 0
+          ? "lead_name"
+          : i === 1
+          ? "user_name"
+          : i === 2
+          ? "business"
+          : i === 3
+          ? "details"
+          : i === 4
+          ? "location"
+          : i === 5
+          ? "email"
+          : "details";
     }
   }
   return kinds;
@@ -296,28 +335,41 @@ function valueForKind(kind, { user, lead, input, suggestion }) {
 function labelForKind(kind, i) {
   const base = `Parameter ${i + 1}`;
   switch (kind) {
-    case "lead_name": return `Lead name ({{${i + 1}}})`;
-    case "user_name": return `Your name ({{${i + 1}}})`;
-    case "business": return `Business ({{${i + 1}}})`;
-    case "details": return `Details / message ({{${i + 1}}})`;
-    case "date": return `Date ({{${i + 1}}})`;
-    case "time": return `Time ({{${i + 1}}})`;
-    case "location": return `Location ({{${i + 1}}})`;
-    case "service": return `Service ({{${i + 1}}})`;
-    case "price": return `Price ({{${i + 1}}})`;
-    case "email": return `Email ({{${i + 1}}})`;
-    case "phone": return `Phone ({{${i + 1}}})`;
-    default: return `${base} ({{${i + 1}}})`;
+    case "lead_name":
+      return `Lead name ({{${i + 1}}})`;
+    case "user_name":
+      return `Your name ({{${i + 1}}})`;
+    case "business":
+      return `Business ({{${i + 1}}})`;
+    case "details":
+      return `Details / message ({{${i + 1}}})`;
+    case "date":
+      return `Date ({{${i + 1}}})`;
+    case "time":
+      return `Time ({{${i + 1}}})`;
+    case "location":
+      return `Location ({{${i + 1}}})`;
+    case "service":
+      return `Service ({{${i + 1}}})`;
+    case "price":
+      return `Price ({{${i + 1}}})`;
+    case "email":
+      return `Email ({{${i + 1}}})`;
+    case "phone":
+      return `Phone ({{${i + 1}}})`;
+    default:
+      return `${base} ({{${i + 1}}})`;
   }
 }
 
 /** ===== COMPONENT ===== */
 export default function Messages({ user, leads = [], defaultTemplate = "", language = "en" }) {
-  const API = process.env.REACT_APP_API_URL;
+  const API = API_BASE;
 
   /** --- selection & list filter --- */
   const [q, setQ] = useState("");
   const filteredLeads = useMemo(() => {
+    if (!Array.isArray(leads) || !leads.length) return [];
     if (!q.trim()) return leads;
     const s = q.trim().toLowerCase();
     return leads.filter(
@@ -353,6 +405,8 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
   const [loading, setLoading] = useState(false);
   const chatRef = useRef(null);
   const pollTimer = useRef(null);
+  const pollAbort = useRef(null);
+  const [pollDelayMs, setPollDelayMs] = useState(6000);
 
   // automation log (for current lead)
   const [autoLog, setAutoLog] = useState([]);
@@ -366,6 +420,12 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
       clearTimeout(pollTimer.current);
       pollTimer.current = null;
     }
+    if (pollAbort.current) {
+      try {
+        pollAbort.current.abort();
+      } catch {}
+      pollAbort.current = null;
+    }
     setSuggestion(null);
 
     // load per-lead automation log
@@ -378,34 +438,71 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
     setShowAutoLog(false);
   }, [activeLeadId, user?.email, lead?.id]);
 
-  // poll the server for this lead
+  // Visibility-aware polling delay
+  useEffect(() => {
+    const onVis = () => setPollDelayMs(document.hidden ? 12000 : 6000);
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, []);
+
+  // poll the server for this lead (with abort + backoff)
   useEffect(() => {
     if (!API || !user?.email || !lead?.id) return;
-    let stop = false;
+    let stopped = false;
+    let backoff = 0; // ms
 
     const tick = async () => {
+      if (stopped) return;
+      if (pollAbort.current) {
+        try {
+          pollAbort.current.abort();
+        } catch {}
+      }
+      pollAbort.current = new AbortController();
+      const { signal } = pollAbort.current;
+
       try {
         const r = await fetch(
           `${API}/api/whatsapp/messages?user_email=${encodeURIComponent(user.email)}&lead_id=${encodeURIComponent(
             lead.id
-          )}`
+          )}`,
+          { signal }
         );
-        const j = await r.json();
-        if (!stop) setThread(Array.isArray(j?.messages) ? j.messages : []);
-      } catch {}
-      if (!stop) pollTimer.current = setTimeout(tick, 6000);
+        const j = await r.json().catch(() => ({}));
+        if (!stopped) {
+          setThread(Array.isArray(j?.messages) ? j.messages : []);
+        }
+        backoff = 0; // success resets backoff
+      } catch (err) {
+        // ignore aborts, apply capped backoff otherwise
+        if (!(err instanceof DOMException && err.name === "AbortError")) {
+          backoff = Math.min(30000, (backoff || pollDelayMs) * 1.5);
+        }
+      } finally {
+        if (!stopped) {
+          const delay = backoff || pollDelayMs;
+          pollTimer.current = setTimeout(tick, delay);
+        }
+      }
     };
 
     tick();
     return () => {
-      stop = true;
+      stopped = true;
       if (pollTimer.current) clearTimeout(pollTimer.current);
+      if (pollAbort.current) {
+        try {
+          pollAbort.current.abort();
+        } catch {}
+      }
     };
-  }, [API, user?.email, lead?.id]);
+  }, [API, user?.email, lead?.id, pollDelayMs]);
 
   // scroll to bottom on new messages
   useEffect(() => {
-    chatRef.current?.scrollTo({ top: 1e9, behavior: "smooth" });
+    try {
+      chatRef.current?.scrollTo({ top: 1e9, behavior: "smooth" });
+    } catch {}
   }, [thread.length, activeLeadId]);
 
   /** --- 24h gate & templates --- */
@@ -429,7 +526,9 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
         const r = await fetch(`${API}/api/whatsapp/health`);
         const j = await r.json();
         setHealth(j);
-      } catch {}
+      } catch {
+        setHealth(null);
+      }
     })();
   }, [API]);
 
@@ -439,7 +538,7 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
     (async () => {
       try {
         const r = await fetch(`${API}/api/whatsapp/templates`);
-        const j = await r.json();
+        const j = await r.json().catch(() => ({}));
         const rows = Array.isArray(j?.data?.data) ? j.data.data : [];
         const cleaned = rows.filter((t) => String(t?.name || "").toLowerCase() !== "hello_world");
         setTemplates(
@@ -449,7 +548,9 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
             status: String(t.status || "").toUpperCase(),
           }))
         );
-      } catch {}
+      } catch {
+        setTemplates([]);
+      }
     })();
   }, [API]);
 
@@ -476,40 +577,48 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
   }, [templates, health, defaultTemplate, language, templateName, templateLangUI]);
 
   // window state (24h / template)
-  const refreshWindow = async (force = false) => {
-    if (!API || !user?.email || !lead?.id) return;
-    const langApi = normApi(toApiLang(templateLangUI));
-    const tpl = (templateName || "").trim();
-    try {
-      const url = `${API}/api/whatsapp/window-state?user_email=${encodeURIComponent(
-        user.email
-      )}&lead_id=${encodeURIComponent(lead.id)}&template_name=${encodeURIComponent(tpl)}&language_code=${encodeURIComponent(
-        langApi
-      )}${force ? "&force=1" : ""}`;
-      const r = await fetch(url);
-      const d = await r.json();
-      setGate({
-        inside24h: !!d.inside24h,
-        canFreeText: !!d.canFreeText,
-        canTemplate: !!d.canTemplate,
-        templateApproved: !!d.templateApproved,
-        templateStatus: String(d.templateStatus || "UNKNOWN").toUpperCase(),
-      });
-    } catch {}
-  };
+  const refreshWindow = useCallback(
+    async (force = false) => {
+      if (!API || !user?.email || !lead?.id) return;
+      const langApi = normApi(toApiLang(templateLangUI));
+      const tpl = (templateName || "").trim();
+      try {
+        const url = `${API}/api/whatsapp/window-state?user_email=${encodeURIComponent(
+          user.email
+        )}&lead_id=${encodeURIComponent(lead.id)}&template_name=${encodeURIComponent(tpl)}&language_code=${encodeURIComponent(
+          langApi
+        )}${force ? "&force=1" : ""}`;
+        const r = await fetch(url);
+        const d = await r.json().catch(() => ({}));
+        setGate({
+          inside24h: !!d.inside24h,
+          canFreeText: !!d.canFreeText,
+          canTemplate: !!d.canTemplate,
+          templateApproved: !!d.templateApproved,
+          templateStatus: String(d.templateStatus || "UNKNOWN").toUpperCase(),
+        });
+      } catch {
+        // keep prior gate state on error
+      }
+    },
+    [API, user?.email, lead?.id, templateName, templateLangUI]
+  );
+
   useEffect(() => {
     refreshWindow(false);
-  }, [API, user?.email, lead?.id, templateName, templateLangUI]); // eslint-disable-line
+  }, [refreshWindow]);
+
   useEffect(() => {
     refreshWindow(true);
-  }, []); // eslint-disable-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // run once on mount
 
   /** --- template params (minimal) --- */
   const [expectedParams, setExpectedParams] = useState(null);
   const [paramValues, setParamValues] = useState([]);
   const [templateBodyText, setTemplateBodyText] = useState("");
   const [templateExample, setTemplateExample] = useState(null);
-  const [paramKinds, setParamKinds] = useState([]); // NEW: inferred kinds for labels + autofill
+  const [paramKinds, setParamKinds] = useState([]); // inferred kinds for labels + autofill
 
   useEffect(() => {
     if (!API) return;
@@ -522,11 +631,18 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
       setParamKinds([]);
       return;
     }
+    let aborted = false;
+    const ctrl = new AbortController();
+
     (async () => {
       try {
-        const r = await fetch(`${API}/api/whatsapp/template-info?name=${encodeURIComponent(name)}`);
-        const j = await r.json();
+        const r = await fetch(`${API}/api/whatsapp/template-info?name=${encodeURIComponent(name)}`, {
+          signal: ctrl.signal,
+        });
+        const j = await r.json().catch(() => ({}));
         const t = (j.templates || [])[0];
+
+        if (aborted) return;
 
         if (t) {
           const count = typeof t.body_param_count === "number" ? t.body_param_count : null;
@@ -540,7 +656,6 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
           const ex = body?.example?.body_text;
           setTemplateExample(Array.isArray(ex) && ex.length ? ex[0] : null);
 
-          // infer param kinds for ANY template
           if (typeof count === "number" && count > 0) {
             const inferred = inferParamKindsFromBody(bodyText || "", count);
             setParamKinds(inferred);
@@ -557,16 +672,28 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
           setParamValues([]);
         }
       } catch {
-        setExpectedParams(null);
-        setTemplateBodyText("");
-        setTemplateExample(null);
-        setParamKinds([]);
-        setParamValues([]);
+        if (!aborted) {
+          setExpectedParams(null);
+          setTemplateBodyText("");
+          setTemplateExample(null);
+          setParamKinds([]);
+          setParamValues([]);
+        }
       }
     })();
+
+    return () => {
+      aborted = true;
+      try {
+        ctrl.abort();
+      } catch {}
+    };
   }, [API, templateName]);
 
   // Fill params for ANY template using inferred kinds + fallbacks
+  const [input, setInput] = useState("");
+  const [banner, setBanner] = useState(null);
+
   const autofillParams = () => {
     if (typeof expectedParams !== "number" || expectedParams <= 0) return;
     const values = Array.from({ length: expectedParams }, (_, idx) => {
@@ -576,10 +703,7 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
     setParamValues(values);
   };
 
-  /** --- composer --- */
-  const [input, setInput] = useState("");
-  const [banner, setBanner] = useState(null);
-
+  /** --- derive last inbound message --- */
   const lastInbound = useMemo(() => {
     for (let i = thread.length - 1; i >= 0; i--) {
       if (thread[i]?.from === "lead" && typeof thread[i]?.text === "string") {
@@ -645,7 +769,7 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
         body: JSON.stringify(payload),
       });
 
-      const j = await res.json();
+      const j = await res.json().catch(() => ({}));
       if (!res.ok) {
         setBanner(j?.error || `Failed to add appointment (${res.status})`);
         return;
@@ -663,12 +787,12 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
               lead.id
             )}`
           );
-          const jj = await r.json();
+          const jj = await r.json().catch(() => ({}));
           setThread(Array.isArray(jj?.messages) ? jj.messages : []);
         } catch {}
       }, 250);
     } catch (e) {
-      setBanner(e.message || "Failed to add appointment.");
+      setBanner(e?.message || "Failed to add appointment.");
     }
   };
 
@@ -719,7 +843,7 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
 
       if (!res.ok || !data.ok) {
         setBanner(data?.error || `Send failed (${res.status})`);
@@ -739,12 +863,12 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
               lead.id
             )}`
           );
-          const j = await r.json();
+          const j = await r.json().catch(() => ({}));
           setThread(Array.isArray(j?.messages) ? j.messages : []);
         } catch {}
       }, 250);
     } catch (e) {
-      setBanner(e.message || "Send failed.");
+      setBanner(e?.message || "Send failed.");
     } finally {
       setLoading(false);
     }
@@ -771,7 +895,7 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const j = await r.json();
+      const j = await r.json().catch(() => ({}));
       if (j?.reply) {
         const draft = cleanAIText(j.reply);
         setInput((prev) => (prev?.trim() ? prev.trim() + "\n\n" + draft : draft));
@@ -779,7 +903,7 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
         setBanner(j?.error || "AI couldn’t generate a reply.");
       }
     } catch (e) {
-      setBanner(e.message || "AI draft failed.");
+      setBanner(e?.message || "AI draft failed.");
     }
   };
 
@@ -814,7 +938,9 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
       const key = AUTO_LOG_KEY(user.email, lead.id);
       setAutoLog((prev) => {
         const next = [...prev, ...matched];
-        try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+        try {
+          localStorage.setItem(key, JSON.stringify(next));
+        } catch {}
         return next;
       });
     };
@@ -853,7 +979,9 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
       const add = detected.filter((d) => !seen.has(`${d.created_at}|${(d.text || "").slice(0, 40)}`));
       if (!add.length) return prev;
       const next = [...prev, ...add];
-      try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
+      try {
+        localStorage.setItem(key, JSON.stringify(next));
+      } catch {}
       return next;
     });
   }, [thread, user?.email, lead?.id, lead?.email, lead?.whatsapp]);
@@ -1094,7 +1222,9 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
                 }}
               >
                 {!templates.find((t) => t.name === templateName && t.languageUI === templateLangUI) && templateName && (
-                  <option value={`${templateName}|${templateLangUI}`}>{templateName} ({templateLangUI})</option>
+                  <option value={`${templateName}|${templateLangUI}`}>
+                    {templateName} ({templateLangUI})
+                  </option>
                 )}
                 {templates.map((t) => (
                   <option key={`${t.name}-${t.languageUI}`} value={`${t.name}|${t.languageUI}`}>
@@ -1270,9 +1400,11 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
               paddingBottom: 110,
             }}
           >
-            {thread.length === 0 && <div style={{ textAlign: "center", color: C.sub, marginTop: 8 }}>No messages yet. Say hello 👋</div>}
+            {thread.length === 0 && (
+              <div style={{ textAlign: "center", color: C.sub, marginTop: 8 }}>No messages yet. Say hello 👋</div>
+            )}
             {thread.map((m, i) => (
-              <Bubble key={i} from={m.from} text={m.text} time={m.time} />
+              <Bubble key={`${m.time || i}-${i}`} from={m.from} text={m.text} time={m.time} />
             ))}
           </div>
 
@@ -1327,7 +1459,12 @@ export default function Messages({ user, leads = [], defaultTemplate = "", langu
                   AI Reply
                 </button>
 
-                <button onClick={onSend} disabled={!canSendBase || loading} style={btn("primary", !canSendBase || loading)} title="Send (Ctrl/⌘ + Enter)">
+                <button
+                  onClick={onSend}
+                  disabled={!canSendBase || loading}
+                  style={btn("primary", !canSendBase || loading)}
+                  title="Send (Ctrl/⌘ + Enter)"
+                >
                   {loading ? "Sending…" : "Send"}
                 </button>
               </div>

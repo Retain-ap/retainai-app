@@ -1,9 +1,19 @@
 // src/components/Login.jsx
-import React, { useEffect, useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, Link, useLocation } from "react-router-dom";
 import { GoogleLogin } from "@react-oauth/google";
 import logo from "../assets/logo.png";
 import defaultAvatar from "../assets/default-avatar.png";
+
+/**
+ * Login page — polished UX + resiliency
+ * - Consistent env-based API base
+ * - Redirects to /app if already signed in
+ * - Supports ?next=/path and ?success=1 banners (e.g. after Checkout)
+ * - "Remember me" email persistence
+ * - Accessible errors (aria-live), Caps Lock warning, keyboard-friendly
+ * - Subtle brand styling to match the rest of the app
+ */
 
 // ---- Theme ----
 const BG = {
@@ -26,7 +36,6 @@ const API_BASE =
   (typeof process !== "undefined" &&
     process.env &&
     process.env.REACT_APP_API_BASE) ||
-  // Fallback: use prod when not on localhost
   (typeof window !== "undefined" &&
   window.location &&
   window.location.hostname.includes("localhost")
@@ -34,7 +43,17 @@ const API_BASE =
     : "https://retainai-app.onrender.com");
 
 // Small input
-function Input({ type = "text", value, onChange, placeholder, onKeyDown, rightEl, autoComplete }) {
+function Input({
+  type = "text",
+  value,
+  onChange,
+  placeholder,
+  onKeyDown,
+  rightEl,
+  autoComplete,
+  onKeyUp,
+  "aria-invalid": ariaInvalid,
+}) {
   return (
     <div style={{ position: "relative" }}>
       <input
@@ -42,8 +61,10 @@ function Input({ type = "text", value, onChange, placeholder, onKeyDown, rightEl
         value={value}
         onChange={onChange}
         onKeyDown={onKeyDown}
+        onKeyUp={onKeyUp}
         placeholder={placeholder}
         autoComplete={autoComplete}
+        aria-invalid={ariaInvalid}
         style={{
           width: "100%",
           padding: "12px 14px",
@@ -57,7 +78,14 @@ function Input({ type = "text", value, onChange, placeholder, onKeyDown, rightEl
         }}
       />
       {rightEl ? (
-        <div style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)" }}>
+        <div
+          style={{
+            position: "absolute",
+            right: 10,
+            top: "50%",
+            transform: "translateY(-50%)",
+          }}
+        >
           {rightEl}
         </div>
       ) : null}
@@ -65,22 +93,100 @@ function Input({ type = "text", value, onChange, placeholder, onKeyDown, rightEl
   );
 }
 
+function Banner({ tone = "info", children, onClose }) {
+  const colors =
+    tone === "success"
+      ? { bg: "#0f1a12", border: "#1f6841", text: "#b6e355" }
+      : tone === "error"
+      ? { bg: "#1a0f0f", border: "#6b1f1f", text: "#ffd1d1" }
+      : { bg: "#0f131a", border: "#1f3b68", text: "#b9d6ff" };
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      style={{
+        background: colors.bg,
+        border: `1px solid ${colors.border}`,
+        color: colors.text,
+        borderRadius: 12,
+        padding: "10px 12px",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        marginBottom: 12,
+      }}
+    >
+      <div style={{ fontWeight: 700 }}>{children}</div>
+      {onClose && (
+        <button
+          onClick={onClose}
+          aria-label="Dismiss message"
+          style={{
+            background: "transparent",
+            border: "none",
+            color: colors.text,
+            fontWeight: 900,
+            fontSize: 18,
+            cursor: "pointer",
+          }}
+        >
+          ×
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function Login() {
+  const navigate = useNavigate();
+  const { search } = useLocation();
+
+  const params = useMemo(() => new URLSearchParams(search), [search]);
+  const next = params.get("next") || "/app";
+  const success = params.get("success") || params.get("trial") || "";
+  const signup = params.get("signedup") || "";
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [remember, setRemember] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const navigate = useNavigate();
+  const [capsOn, setCapsOn] = useState(false);
+  const [banner, setBanner] = useState("");
 
-  // Prefill remembered email
+  const emailRef = useRef(null);
+  const pwRef = useRef(null);
+
+  // Prefill remembered email & remember flag
   useEffect(() => {
-    const saved = localStorage.getItem("rememberEmail");
-    if (saved) setEmail(saved);
-    const savedFlag = localStorage.getItem("rememberFlag");
-    if (savedFlag) setRemember(savedFlag === "1");
+    try {
+      const saved = localStorage.getItem("rememberEmail");
+      if (saved) setEmail(saved);
+      const savedFlag = localStorage.getItem("rememberFlag");
+      if (savedFlag) setRemember(savedFlag === "1");
+    } catch {}
   }, []);
+
+  // Show contextual success banners
+  useEffect(() => {
+    if (success) {
+      setBanner("You're all set. Sign in to start your trial.");
+    } else if (signup) {
+      setBanner("Account created. Please sign in.");
+    }
+  }, [success, signup]);
+
+  // Redirect if already logged in
+  useEffect(() => {
+    try {
+      const u = JSON.parse(localStorage.getItem("user") || "null");
+      if (u && u.email) {
+        navigate("/app", { replace: true });
+      }
+    } catch {}
+  }, [navigate]);
 
   // Forgot password -> open email to support with prefilled body
   const handleForgot = () => {
@@ -119,7 +225,6 @@ export default function Login() {
         })
       );
       localStorage.setItem("userEmail", data.user.email);
-      // short cookie so backend/other tabs can read it
       document.cookie = `user_email=${encodeURIComponent(
         data.user.email
       )}; Path=/; SameSite=Lax; Max-Age=2592000`;
@@ -128,7 +233,7 @@ export default function Login() {
         localStorage.setItem("rememberEmail", data.user.email);
         localStorage.setItem("rememberFlag", "1");
       }
-      navigate("/app");
+      navigate(next, { replace: true });
     } catch {
       setError("Google login error.");
       setSubmitting(false);
@@ -140,10 +245,18 @@ export default function Login() {
     e.preventDefault();
     if (submitting) return;
     setError("");
-    if (!email || !password) {
-      setError("All fields required.");
+
+    if (!email) {
+      setError("Email is required.");
+      emailRef.current?.focus();
       return;
     }
+    if (!password) {
+      setError("Password is required.");
+      pwRef.current?.focus();
+      return;
+    }
+
     setSubmitting(true);
     try {
       const res = await fetch(`${API_BASE}/api/login`, {
@@ -178,7 +291,7 @@ export default function Login() {
         localStorage.removeItem("rememberEmail");
         localStorage.setItem("rememberFlag", "0");
       }
-      navigate("/app");
+      navigate(next, { replace: true });
     } catch {
       setError("Login error.");
       setSubmitting(false);
@@ -191,7 +304,10 @@ export default function Login() {
   return (
     <div style={{ minHeight: "100vh", background: BG.page, color: "#fff" }}>
       {/* gold glows */}
-      <div aria-hidden style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 0 }}>
+      <div
+        aria-hidden
+        style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 0 }}
+      >
         <div
           style={{
             position: "absolute",
@@ -222,7 +338,15 @@ export default function Login() {
       </div>
 
       {/* top bar */}
-      <div style={{ position: "sticky", top: 0, zIndex: 5, background: "#0C0D10", borderBottom: `1px solid ${BG.line}` }}>
+      <div
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 5,
+          background: "#0C0D10",
+          borderBottom: `1px solid ${BG.line}`,
+        }}
+      >
         <div
           style={{
             maxWidth: 1120,
@@ -234,12 +358,23 @@ export default function Login() {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <img src={logo} alt="RetainAI" style={{ width: 28, height: 28, borderRadius: 6 }} />
-            <span style={{ color: BG.gold, fontWeight: 900, letterSpacing: 0.2 }}>RetainAI</span>
+            <img
+              src={logo}
+              alt="RetainAI"
+              style={{ width: 28, height: 28, borderRadius: 6 }}
+            />
+            <span
+              style={{ color: BG.gold, fontWeight: 900, letterSpacing: 0.2 }}
+            >
+              RetainAI
+            </span>
           </div>
           <div style={{ fontSize: 13, color: BG.text60 }}>
             New here?{" "}
-            <Link to="/signup" style={{ color: BG.goldDeep, textDecoration: "underline" }}>
+            <Link
+              to="/signup"
+              style={{ color: BG.goldDeep, textDecoration: "underline" }}
+            >
               Create account
             </Link>
           </div>
@@ -273,10 +408,31 @@ export default function Login() {
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-            <img src={logo} alt="RetainAI" style={{ width: 84, height: 84, borderRadius: 18, background: "#111", objectFit: "cover" }} />
+            <img
+              src={logo}
+              alt="RetainAI"
+              style={{
+                width: 84,
+                height: 84,
+                borderRadius: 18,
+                background: "#111",
+                objectFit: "cover",
+              }}
+            />
             <div>
-              <div style={{ fontSize: 40, fontWeight: 900, letterSpacing: 0.4, color: BG.gold }}>RetainAI</div>
-              <div style={{ color: BG.text80, marginTop: 6, fontSize: 16 }}>Client relationships. Done right.</div>
+              <div
+                style={{
+                  fontSize: 40,
+                  fontWeight: 900,
+                  letterSpacing: 0.4,
+                  color: BG.gold,
+                }}
+              >
+                RetainAI
+              </div>
+              <div style={{ color: BG.text80, marginTop: 6, fontSize: 16 }}>
+                Client relationships. Done right.
+              </div>
             </div>
           </div>
         </div>
@@ -294,8 +450,24 @@ export default function Login() {
             justifyContent: "center",
           }}
         >
-          <h2 style={{ color: BG.gold, fontWeight: 800, fontSize: 28, marginBottom: 12 }}>Welcome back</h2>
-          <form onSubmit={handleLogin}>
+          <h2
+            style={{
+              color: BG.gold,
+              fontWeight: 800,
+              fontSize: 28,
+              marginBottom: 12,
+            }}
+          >
+            Welcome back
+          </h2>
+
+          {banner && (
+            <Banner tone="success" onClose={() => setBanner("")}>
+              {banner}
+            </Banner>
+          )}
+
+          <form onSubmit={handleLogin} aria-busy={submitting}>
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <Input
                 type="email"
@@ -304,38 +476,107 @@ export default function Login() {
                 onKeyDown={(e) => onEnter(e, handleLogin)}
                 placeholder="Email"
                 autoComplete="username"
+                aria-invalid={!email && error ? "true" : "false"}
+                ref={emailRef}
               />
               <Input
                 type={showPw ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 onKeyDown={(e) => onEnter(e, handleLogin)}
+                onKeyUp={(e) => setCapsOn(e.getModifierState?.("CapsLock"))}
                 placeholder="Password"
                 autoComplete="current-password"
+                aria-invalid={!password && error ? "true" : "false"}
                 rightEl={
                   <button
                     type="button"
                     onClick={() => setShowPw((v) => !v)}
-                    style={{ fontSize: 12, color: BG.text60, background: "transparent", border: 0, cursor: "pointer" }}
+                    style={{
+                      fontSize: 12,
+                      color: BG.text60,
+                      background: "transparent",
+                      border: 0,
+                      cursor: "pointer",
+                    }}
                     aria-label={showPw ? "Hide password" : "Show password"}
                   >
                     {showPw ? "Hide" : "Show"}
                   </button>
                 }
+                ref={pwRef}
               />
 
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 2 }}>
-                <label style={{ display: "inline-flex", alignItems: "center", gap: 8, color: BG.text80, fontSize: 14 }}>
-                  <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} style={{ accentColor: BG.gold }} />
+              {capsOn && (
+                <div
+                  style={{
+                    background: "#1a1306",
+                    border: "1px solid #6b4e00",
+                    color: BG.gold,
+                    borderRadius: 10,
+                    padding: "6px 8px",
+                    fontSize: 12,
+                  }}
+                >
+                  Caps Lock is on.
+                </div>
+              )}
+
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginTop: 2,
+                }}
+              >
+                <label
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 8,
+                    color: BG.text80,
+                    fontSize: 14,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={remember}
+                    onChange={(e) => setRemember(e.target.checked)}
+                    style={{ accentColor: BG.gold }}
+                  />
                   Remember me
                 </label>
-                <button type="button" onClick={handleForgot} style={{ color: BG.goldDeep, fontSize: 14, textDecoration: "underline", background: "transparent", border: 0, cursor: "pointer" }}>
+                <button
+                  type="button"
+                  onClick={handleForgot}
+                  style={{
+                    color: BG.goldDeep,
+                    fontSize: 14,
+                    textDecoration: "underline",
+                    background: "transparent",
+                    border: 0,
+                    cursor: "pointer",
+                  }}
+                >
                   Forgot password?
                 </button>
               </div>
 
+              {/* Error message */}
               {error && (
-                <div style={{ background: "#1a1306", border: "1px solid #6b4e00", color: BG.gold, borderRadius: 10, padding: "8px 10px", fontSize: 14 }}>
+                <div
+                  role="alert"
+                  aria-live="assertive"
+                  style={{
+                    background: "#1a0f0f",
+                    border: "1px solid #6b1f1f",
+                    color: "#ffd1d1",
+                    borderRadius: 10,
+                    padding: "8px 10px",
+                    fontSize: 14,
+                  }}
+                >
                   {error}
                 </div>
               )}
@@ -358,7 +599,17 @@ export default function Login() {
                 {submitting ? "Signing in…" : "Login"}
               </button>
 
-              <div style={{ display: "flex", alignItems: "center", gap: 10, color: BG.text60, fontWeight: 700, fontSize: 14, margin: "6px 0" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  color: BG.text60,
+                  fontWeight: 700,
+                  fontSize: 14,
+                  margin: "6px 0",
+                }}
+              >
                 <div style={{ flex: 1, borderBottom: `1px solid ${BG.line}` }} />
                 <span>or</span>
                 <div style={{ flex: 1, borderBottom: `1px solid ${BG.line}` }} />
@@ -373,8 +624,34 @@ export default function Login() {
                 text="signin_with"
               />
 
-              <div style={{ marginTop: 8, textAlign: "center", color: BG.text60, fontSize: 12 }}>
+              <div
+                style={{
+                  marginTop: 8,
+                  textAlign: "center",
+                  color: BG.text60,
+                  fontSize: 12,
+                }}
+              >
                 We’ll never post or share without permission.
+              </div>
+
+              {/* Legal / support footer */}
+              <div
+                style={{
+                  marginTop: 10,
+                  textAlign: "center",
+                  color: BG.text60,
+                  fontSize: 12,
+                }}
+              >
+                Need help?{" "}
+                <a
+                  href={`mailto:${SUPPORT_EMAIL}`}
+                  style={{ color: BG.goldDeep, textDecoration: "underline" }}
+                >
+                  Contact support
+                </a>
+                .
               </div>
             </div>
           </form>

@@ -1,5 +1,5 @@
 export function sendNotification(email, message = '⏰ Time to follow up with a lead!') {
-  fetch('http://localhost:5000/api/send-notification', {
+  fetch('https://retainai-app.onrender.com/api/send-notification', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, message }),
