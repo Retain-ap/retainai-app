@@ -210,6 +210,68 @@ except Exception as e:
 # ----------------------------
 # Helpers: JSON storage (atomic)
 # ----------------------------
+# ---- one-time migration of legacy flat files into DATA_ROOT ----
+def _migrate_legacy_files():
+    import shutil
+    legacy_names = [
+        "leads.json",
+        "users.json",
+        "notifications.json",
+        "appointments.json",
+        "whatsapp_chats.json",
+        "whatsapp_status.json",
+    ]
+    for name in legacy_names:
+        src = os.path.join(BASE_DIR, name)
+        dst = os.path.join(DATA_ROOT, name)
+        try:
+            if os.path.exists(src) and not os.path.exists(dst):
+                shutil.copy2(src, dst)
+                print(f"[DATA MIGRATE] copied {src} -> {dst}")
+        except Exception as e:
+            print(f"[DATA MIGRATE] failed {src}: {e}")
+
+    # move ICS directory if it exists in legacy location
+    legacy_ics = os.path.join(BASE_DIR, "ics_files")
+    if os.path.isdir(legacy_ics):
+        try:
+            for fn in os.listdir(legacy_ics):
+                s = os.path.join(legacy_ics, fn)
+                d = os.path.join(ICS_DIR, fn)
+                if os.path.isfile(s) and not os.path.exists(d):
+                    shutil.copy2(s, d)
+            print(f"[DATA MIGRATE] ICS files copied to {ICS_DIR}")
+        except Exception as e:
+            print(f"[DATA MIGRATE] ICS copy failed: {e}")
+
+_migrate_legacy_files()
+
+@app.get("/api/_debug/storage")
+def _debug_storage():
+    try:
+        leads = load_leads()
+        users = load_users()
+        return jsonify({
+            "DATA_ROOT": DATA_ROOT,
+            "files": {
+                "leads_file": LEADS_FILE,
+                "users_file": USERS_FILE,
+                "appointments_file": APPOINTMENTS_FILE,
+                "chats_file": CHAT_FILE,
+                "statuses_file": STATUS_FILE,
+            },
+            "keys": {
+                "leads_users": list(leads.keys())[:10],
+                "users_users": list(users.keys())[:10],
+            },
+            "counts": {
+                "num_users_with_leads": len(leads),
+                "num_users": len(users),
+            }
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "DATA_ROOT": DATA_ROOT}), 500
+
 def load_json(file_path):
     if not os.path.exists(file_path):
         return {}
