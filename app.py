@@ -246,6 +246,53 @@ def _migrate_legacy_files():
 
 _migrate_legacy_files()
 
+# ----------------------------
+# Debug: full data wipe (guarded)
+# ----------------------------
+@app.delete("/api/_debug/wipe")
+def _debug_wipe_all():
+    token = request.headers.get("X-Wipe-Token", "")
+    expected = os.getenv("WIPE_TOKEN", "")
+    if not expected or token != expected:
+        return jsonify({"ok": False, "error": "forbidden"}), 403
+
+    # Remove JSON contents
+    try:
+        # Core app files
+        save_json(LEADS_FILE, {})
+        save_json(USERS_FILE, {})
+        save_json(NOTIFICATIONS_FILE, {})
+        save_json(APPOINTMENTS_FILE, {})
+        save_json(CHAT_FILE, {})
+        save_json(STATUS_FILE, {})
+
+        # Automations engine files
+        _write_json2(FILE_AUTOMATIONS, {"users": {}})
+        _write_json2(FILE_STATE, {})
+        _write_json2(FILE_NOTIFICATIONS, {"notifications": []})
+        _write_json2(FILE_USERS, {"users": {}})
+
+        # Clear ICS files
+        try:
+            for fname in os.listdir(ICS_DIR):
+                if fname.endswith(".ics"):
+                    os.remove(os.path.join(ICS_DIR, fname))
+        except Exception:
+            pass
+
+        # Clear small in-memory caches
+        try:
+            _MSG_CACHE.clear()
+            _TEMPLATE_CACHE.clear()
+            _WABA_RES["id"] = None
+            _WABA_RES["checked_at"] = None
+        except Exception:
+            pass
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.get("/api/_debug/storage")
 def _debug_storage():
     try:
