@@ -6,23 +6,43 @@ import "./index.css";
 import { SettingsProvider } from "./components/SettingsContext";
 import { GoogleOAuthProvider } from "@react-oauth/google";
 
-// ---- Env helpers: CRA first, then Vite ----
-const env = (craKey, viteKey) =>
-  (typeof process !== "undefined" && process.env && process.env[craKey]) ||
-  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env[viteKey]) ||
+/* -------------------- Google Client ID wiring -------------------- */
+/* CRA env first, then Vite, then <meta> fallback */
+const CRA_ID =
+  (typeof process !== "undefined" &&
+    process.env &&
+    process.env.REACT_APP_GOOGLE_CLIENT_ID) ||
   "";
 
-const GOOGLE_CLIENT_ID   = env("REACT_APP_GOOGLE_CLIENT_ID", "VITE_GOOGLE_CLIENT_ID");
-const API_BASE           = env("REACT_APP_API_BASE",         "VITE_API_BASE");
-const VAPID_PUBLIC_KEY   = env("REACT_APP_VAPID_PUBLIC_KEY", "VITE_VAPID_PUBLIC_KEY");
+const VITE_ID =
+  (typeof import.meta !== "undefined" &&
+    import.meta.env &&
+    import.meta.env.VITE_GOOGLE_CLIENT_ID) ||
+  "";
+
+// Fallback: read from <meta name="google-signin-client_id" ...>
+const META_ID =
+  (typeof document !== "undefined" &&
+    document
+      .querySelector('meta[name="google-signin-client_id"]')
+      ?.getAttribute("content")) ||
+  "";
+
+const GOOGLE_CLIENT_ID = CRA_ID || VITE_ID || META_ID || "";
 
 if (!GOOGLE_CLIENT_ID) {
-  console.warn("Google client ID missing; set REACT_APP_GOOGLE_CLIENT_ID (or VITE_GOOGLE_CLIENT_ID).");
+  console.warn(
+    "Google client ID missing; set REACT_APP_GOOGLE_CLIENT_ID (or VITE_GOOGLE_CLIENT_ID)."
+  );
 }
 
-// ---------------- PWA install prompt plumbing ----------------
+/* ---------------- PWA install prompt plumbing ---------------- */
 let _deferredInstallPrompt = null;
-export const canPromptInstall = () => !!_deferredInstallPrompt;
+
+export function canPromptInstall() {
+  return !!_deferredInstallPrompt;
+}
+
 export async function promptInstall() {
   if (!_deferredInstallPrompt) throw new Error("Install prompt not ready");
   _deferredInstallPrompt.prompt();
@@ -30,37 +50,37 @@ export async function promptInstall() {
   _deferredInstallPrompt = null;
   return choice;
 }
+
 window.addEventListener("beforeinstallprompt", (e) => {
   e.preventDefault();
   _deferredInstallPrompt = e;
   window.dispatchEvent(new Event("pwa-install-available"));
 });
-window.addEventListener("appinstalled", () => { _deferredInstallPrompt = null; });
-// --------------------------------------------------------------
 
-// Register service worker + Push
+window.addEventListener("appinstalled", () => {
+  _deferredInstallPrompt = null;
+});
+
+/* ---------------- Service Worker + Push ---------------- */
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", async () => {
     try {
       const registration = await navigator.serviceWorker.register("/service-worker.js");
       console.log("Service Worker registered:", registration);
 
-      // Ask for push permission (https or localhost)
-      const { protocol, hostname } = window.location || {};
-      const isSecure = window.isSecureContext || protocol === "https:" || hostname === "localhost";
-
-      if (isSecure && typeof Notification !== "undefined" && VAPID_PUBLIC_KEY) {
+      if (typeof Notification !== "undefined") {
         const permission = await Notification.requestPermission();
-        if (permission === "granted" && registration.pushManager) {
+        if (permission === "granted" && process.env.REACT_APP_VAPID_PUBLIC_KEY) {
           const subscribeOptions = {
             userVisibleOnly: true,
-            applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+            applicationServerKey: urlBase64ToUint8Array(
+              process.env.REACT_APP_VAPID_PUBLIC_KEY
+            ),
           };
           const pushSubscription = await registration.pushManager.subscribe(subscribeOptions);
           console.log("PushSubscription:", pushSubscription);
 
-          const base = (API_BASE || window.location.origin).replace(/\/$/, "");
-          await fetch(`${base}/api/save-subscription`, {
+          await fetch("/api/save-subscription", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -92,7 +112,7 @@ function urlBase64ToUint8Array(base64String) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
   const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
   const rawData = window.atob(base64);
-  const out = new Uint8Array(rawData.length);
-  for (let i = 0; i < rawData.length; ++i) out[i] = rawData.charCodeAt(i);
-  return out;
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
 }

@@ -4,10 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0f1115" />
+
+    <!-- PWA -->
     <link rel="manifest" href="/manifest.webmanifest" />
-    <!-- (optional iOS) -->
     <link rel="apple-touch-icon" href="/icons/icon-192.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
+
+    <!-- Google OAuth (CRA will replace this token at build time) -->
+    <meta name="google-signin-client_id" content="%REACT_APP_GOOGLE_CLIENT_ID%">
+
     <title>RetainAI CRM</title>
   </head>
   <body>
