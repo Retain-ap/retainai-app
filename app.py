@@ -225,6 +225,37 @@ def save_json(file_path, data):
         json.dump(data, f, indent=2, ensure_ascii=False)
     os.replace(tmp, file_path)
 
+def _norm_email(e: str) -> str:
+    return (e or "").strip().lower()
+
+def _norm_phone(s: str) -> str:
+    d = re.sub(r"\D", "", s or "")
+    cc = (os.getenv("DEFAULT_COUNTRY_CODE") or "1").strip()
+    if len(d) == 10 and cc.isdigit():
+        d = cc + d
+    return d
+
+def _ensure_lead_defaults(lead: dict) -> dict:
+    now = datetime.datetime.utcnow().isoformat() + "Z"
+    out = dict(lead or {})
+    out["id"] = str(out.get("id") or uuid4())
+    out["createdAt"] = out.get("createdAt") or now
+    out["last_contacted"] = out.get("last_contacted") or out["createdAt"]
+    out["name"] = (out.get("name") or (out.get("email","").split("@")[0].replace("."," ").title()) or "New Lead")
+    out.setdefault("tags", [])
+    out.setdefault("notes", "")
+    return out
+
+def _find_existing_lead_index(arr: list, cand: dict) -> int:
+    cid  = str(cand.get("id") or "")
+    cem  = _norm_email(cand.get("email"))
+    cph  = _norm_phone(cand.get("phone") or cand.get("whatsapp"))
+    for i, l in enumerate(arr or []):
+        if cid and str(l.get("id")) == cid: return i
+        if cem and _norm_email(l.get("email")) == cem: return i
+        if cph and (_norm_phone(l.get("phone") or l.get("whatsapp")) == cph): return i
+    return -1
+
 def load_leads():         return load_json(LEADS_FILE)
 def save_leads(data):     save_json(LEADS_FILE, data)
 def load_users():         return load_json(USERS_FILE)
@@ -376,6 +407,120 @@ def api_get_user(email):
         return jsonify({"email": e, "profile": {}, "settings": {}}), 200
     user["email"] = e
     return jsonify(user), 200
+
+@app.get("/api/leads/<path:user_email>")
+def get_leads(user_email):
+    user_key = _norm_email(user_email)
+    leads_by_user = load_leads()
+    leads = leads_by_user.get(user_key, [])
+    # paint status for UI
+    users = load_users()
+    user  = users.get(user_key)
+    business_type = (user.get("business", "") if user else "").lower()
+    interval = BUSINESS_TYPE_INTERVALS.get(business_type, 14)
+    now = datetime.datetime.utcnow()
+    out = []
+    for lead in leads:
+        last = lead.get("last_contacted") or lead.get("createdAt")
+        try:
+            last_dt = datetime.datetime.fromisoformat(last.replace("Z",""))
+            days = (now - last_dt).days
+        except Exception:
+            days = 0
+        if days > interval + 2:
+            status, color = "cold", "#e66565"
+        elif interval <= days <= interval + 2:
+            status, color = "warning", "#f7cb53"
+        else:
+            status, color = "active", "#1bc982"
+        out.append({**lead, "status": status, "status_color": color, "days_since_contact": days})
+    return jsonify({"leads": out}), 200
+
+
+@app.post("/api/leads/<path:user_email>")
+def upsert_leads(user_email):
+    """
+    Accepts {leads:[...]} or a single lead object.
+    Merges by id/email/phone. Ensures IDs & defaults. Persists to disk.
+    """
+    user_key = _norm_email(user_email)
+    payload = request.get_json(silent=True) or {}
+    incoming = payload.get("leads")
+    if incoming is None:
+        # allow posting a single lead object
+        if isinstance(payload, dict) and payload:
+            incoming = [payload]
+    if not isinstance(incoming, list):
+        return jsonify({"error":"Leads must be a list or a single lead object"}), 400
+
+    db = load_leads()
+    arr = list(db.get(user_key, []))
+
+    changed = False
+    for raw in incoming:
+        lead = _ensure_lead_defaults(raw)
+        idx = _find_existing_lead_index(arr, lead)
+        if idx >= 0:
+            # shallow merge; keep existing id/createdAt
+            curr = dict(arr[idx])
+            merged = {**curr, **lead}
+            merged["id"] = str(curr.get("id") or merged.get("id"))
+            merged["createdAt"] = curr.get("createdAt") or merged.get("createdAt")
+            arr[idx] = merged
+        else:
+            arr.append(lead)
+        changed = True
+
+    if changed:
+        db[user_key] = arr
+        save_leads(db)
+
+    return jsonify({"message":"Leads upserted","leads":arr}), 200
+
+
+@app.patch("/api/leads/<path:user_email>/<lead_id>")
+def patch_lead(user_email, lead_id):
+    user_key = _norm_email(user_email)
+    patch = request.get_json(silent=True) or {}
+    db = load_leads()
+    arr = list(db.get(user_key, []))
+    for i, l in enumerate(arr):
+        if str(l.get("id")) == str(lead_id):
+            arr[i] = {**l, **patch, "id": str(l.get("id"))}
+            db[user_key] = arr
+            save_leads(db)
+            return jsonify({"lead": arr[i]}), 200
+    return jsonify({"error":"Lead not found"}), 404
+
+
+@app.route('/api/leads/<path:user_email>/<lead_id>/notes', methods=['POST','PATCH'])
+def update_lead_notes(user_email, lead_id):
+    user_key = _norm_email(user_email)
+    body = request.get_json(silent=True) or {}
+    note = (body.get("notes") or body.get("note") or "").strip()
+    db = load_leads()
+    arr = list(db.get(user_key, []))
+    for i, l in enumerate(arr):
+        if str(l.get("id")) == str(lead_id):
+            arr[i]["notes"] = note
+            db[user_key] = arr
+            save_leads(db)
+            return jsonify({"lead": arr[i]}), 200
+    return jsonify({"error":"Lead not found"}), 404
+
+
+@app.post('/api/leads/<path:user_email>/<lead_id>/contacted')
+def mark_lead_contacted(user_email, lead_id):
+    user_key = _norm_email(user_email)
+    db = load_leads()
+    arr = list(db.get(user_key, []))
+    for i, l in enumerate(arr):
+        if str(l.get("id")) == str(lead_id):
+            arr[i]["last_contacted"] = datetime.datetime.utcnow().isoformat() + "Z"
+            db[user_key] = arr
+            save_leads(db)
+            return jsonify({"message":"Lead marked as contacted","lead_id":lead_id}), 200
+    return jsonify({"error":"Lead not found"}), 404
 
 @app.put("/api/user/<path:email>")
 def api_put_user(email):
