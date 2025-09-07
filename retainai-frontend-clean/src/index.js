@@ -46,7 +46,9 @@ if ("serviceWorker" in navigator) {
       console.log("Service Worker registered:", registration);
 
       // Ask for push permission (https or localhost)
-      const isSecure = location.protocol === "https:" || location.hostname === "localhost";
+      const { protocol, hostname } = window.location || {};
+      const isSecure = window.isSecureContext || protocol === "https:" || hostname === "localhost";
+
       if (isSecure && typeof Notification !== "undefined" && VAPID_PUBLIC_KEY) {
         const permission = await Notification.requestPermission();
         if (permission === "granted" && registration.pushManager) {
