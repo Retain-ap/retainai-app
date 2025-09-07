@@ -1,4 +1,3 @@
-// src/components/ProtectedRoute.jsx
 import React, { useEffect, useMemo, useState } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
@@ -9,16 +8,11 @@ function getStoredUser() {
     const raw = window.localStorage.getItem("user");
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    // minimal shape + basic email sanity check
     const email = String(parsed?.email || "").trim();
-    const okEmail =
-      email &&
-      // simple but safe-enough prod regex
-      /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email);
+    const okEmail = email && /^[^\s@]+@[^\s@]{1,}\.[^\s@]{2,}$/.test(email);
     if (!okEmail) return null;
     return { ...parsed, email };
   } catch {
-    // corrupted storage — clear so we don't loop on bad JSON
     try {
       window.localStorage.removeItem("user");
     } catch {}
@@ -43,7 +37,6 @@ function useAuthUser() {
     };
   }, []);
 
-  // Also re-check on visibility change (handles SSO or other tabs)
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === "visible") {
@@ -57,7 +50,6 @@ function useAuthUser() {
   return user;
 }
 
-/** Small loading shim to avoid route flicker on first paint */
 function Splash() {
   return (
     <div
@@ -76,18 +68,12 @@ function Splash() {
   );
 }
 
-/**
- * ProtectedRoute
- * - Verifies presence of a well-formed user object in localStorage
- * - Redirects to /login with ?next=<current-path> so we can bounce back after auth
- * - Updates when auth changes in another tab
- */
 export default function ProtectedRoute({ children }) {
-  const location = useLocation();
+  // IMPORTANT: do NOT call this variable "location" — CRA will flag the global.
+  const routerLocation = useLocation();
   const [ready, setReady] = useState(false);
   const user = useAuthUser();
 
-  // mark ready after first microtask — prevents hydration flicker
   useEffect(() => {
     const id = setTimeout(() => setReady(true), 0);
     return () => clearTimeout(id);
@@ -98,10 +84,17 @@ export default function ProtectedRoute({ children }) {
   if (!ready) return <Splash />;
 
   if (!isAuthed) {
-    // Preserve where the user was trying to go
-    const next = encodeURIComponent(
-      `${location.pathname}${location.search || ""}${location.hash || ""}`
-    );
+    // Prefer the true browser URL. Fallback to react-router location on SSR.
+    const nextPath = (() => {
+      if (typeof window !== "undefined" && window.location) {
+        const { pathname, search, hash } = window.location;
+        return `${pathname}${search || ""}${hash || ""}`;
+      }
+      const rl = routerLocation || {};
+      return `${rl.pathname || "/"}${rl.search || ""}${rl.hash || ""}`;
+    })();
+
+    const next = encodeURIComponent(nextPath);
     return <Navigate to={`/login?next=${next}`} replace />;
   }
 
