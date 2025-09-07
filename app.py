@@ -130,14 +130,34 @@ def _set_session_cookie(resp, email: str):
         max_age=60 * 60 * 24 * 14,  # 14 days
     )
 
-# ---------------------------------------------------
-# Persistent storage root & file layout
-# ---------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
 
-# Primary: DATA_ROOT (Render: set to /data). Fallback to DATA_DIR for backward compat.
-DATA_ROOT = os.getenv("DATA_ROOT") or os.getenv("DATA_DIR") or os.path.join(BASE_DIR, "data")
-os.makedirs(DATA_ROOT, exist_ok=True)
+def _first_writable(paths):
+    for p in paths:
+        if not p:
+            continue
+        try:
+            os.makedirs(p, exist_ok=True)
+            test = os.path.join(p, ".writetest")
+            with open(test, "w", encoding="utf-8") as f:
+                f.write("ok")
+            os.remove(test)
+            return p
+        except Exception:
+            continue
+    # last resort inside repo (ephemeral)
+    fallback = os.path.join(BASE_DIR, "data")
+    os.makedirs(fallback, exist_ok=True)
+    return fallback
+
+# Prefer env, then Render’s persistent disk (/var/data), then repo-local ./data
+DATA_ROOT = _first_writable([
+    os.getenv("DATA_ROOT"),
+    os.getenv("DATA_DIR"),
+    "/var/data",
+    os.path.join(BASE_DIR, "data"),
+])
+print(f"[BOOT] DATA_ROOT = {DATA_ROOT}")
 
 # JSON/state files in DATA_ROOT
 LEADS_FILE         = os.path.join(DATA_ROOT, "leads.json")
