@@ -408,6 +408,55 @@ def send_warning_summary_email(user_email, warning_leads, interval):
         from_email=SENDER_EMAIL,
     )
 
+# ---------- Lead helpers ----------
+def _email_key(s: str) -> str:
+    return (s or "").strip().lower()
+
+def _ensure_lead_defaults(lead: dict) -> dict:
+    now = datetime.datetime.utcnow().isoformat() + "Z"
+    lead = dict(lead or {})
+    lead["id"] = str(lead.get("id") or f"ld_{os.urandom(6).hex()}")
+    lead.setdefault("createdAt", now)
+    lead.setdefault("last_contacted", lead["createdAt"])
+    lead.setdefault("name", lead.get("name") or (lead.get("email","").split("@")[0].title() if lead.get("email") else lead.get("phone","")))
+    lead.setdefault("notes", [])
+    return lead
+
+def _find_lead_index(leads: list[dict], lead_id: str) -> int:
+    lid = str(lead_id)
+    for i, l in enumerate(leads or []):
+        if str(l.get("id")) == lid:
+            return i
+    return -1
+
+def _decorate_and_fix_leads_for_user(user_email: str, leads: list[dict]) -> list[dict]:
+    users = load_users() or {}
+    user = users.get(user_email, {}) or {}
+    business_type = (user.get("business","") or "").lower()
+    interval = BUSINESS_TYPE_INTERVALS.get(business_type, 14)
+    now = datetime.datetime.utcnow()
+    out = []
+    for lead in leads or []:
+        L = dict(lead)
+        L["id"] = str(L.get("id"))
+        last = L.get("last_contacted") or L.get("createdAt")
+        try:
+            last_dt = datetime.datetime.fromisoformat((last or "").replace("Z",""))
+            days = (now - last_dt).days
+        except Exception:
+            days = 0
+        if days > interval + 2:
+            status, color = "cold", "#e66565"
+        elif interval <= days <= interval + 2:
+            status, color = "warning", "#f7cb53"
+        else:
+            status, color = "active", "#1bc982"
+        L["status"] = status
+        L["status_color"] = color
+        L["days_since_contact"] = days
+        out.append(L)
+    return out
+
 def check_for_lead_reminders():
     app.logger.info("[Scheduler] scanning leads for follow-up")
     leads_by_user = load_leads()
@@ -3208,15 +3257,14 @@ def _get_user_email_from_query_or_path(path_email: Optional[str] = None) -> str:
     return (path_email or request.args.get("user_email") or "").strip().lower()
 
 # --- List (both forms supported)
-@app.route('/api/leads', methods=['GET'])
+@app.get('/api/leads')
 def list_leads_qs():
-    user_email = (request.args.get("user_email") or "").strip().lower()
-    if not user_email:
+    key = _email_key(request.args.get("user_email"))
+    if not key:
         return jsonify({"error": "user_email required"}), 400
-    app.logger.info("[LEADS][LIST] user=%s", user_email)
-    leads_by_user = load_leads() or {}
-    leads = leads_by_user.get(user_email, [])
-    leads = _decorate_and_fix_leads_for_user(user_email, leads)
+    db = load_leads() or {}
+    leads = _decorate_and_fix_leads_for_user(key, db.get(key, []))
+    app.logger.info("[LEADS][LIST qs] user=%s count=%d", key, len(leads))
     return jsonify({"leads": leads}), 200
 
 @app.route('/api/leads/<path:user_email>', methods=['GET'])
@@ -3228,51 +3276,38 @@ def list_leads_path(user_email):
     return jsonify({"leads": leads}), 200
 
 # --- Create ONE lead
-@app.route('/api/leads', methods=['POST'])
+@app.post('/api/leads')
 def create_lead():
     body = request.get_json(force=True) or {}
-    user_email = (body.get("user_email") or "").strip().lower()
-    if not user_email:
+    key = _email_key(body.get("user_email"))
+    if not key:
         return jsonify({"error": "user_email required"}), 400
-    lead = body.get("lead") or {}
-    now_iso = datetime.datetime.utcnow().isoformat() + "Z"
-    lead.setdefault("id", f"ld_{os.urandom(6).hex()}")
-    lead.setdefault("createdAt", now_iso)
-    lead.setdefault("last_contacted", now_iso)
-    app.logger.info("[LEADS][CREATE] user=%s id=%s name=%s", user_email, lead["id"], lead.get("name"))
+    lead = _ensure_lead_defaults(body.get("lead") or {})
     db = load_leads() or {}
-    arr = list(db.get(user_email, []) or [])
-    arr.append(lead); db[user_email] = arr; save_leads(db)
-    return list_leads_qs()
+    arr = list(db.get(key, []) or [])
+    arr.append(lead)
+    db[key] = arr
+    save_leads(db)
+    app.logger.info("[LEADS][CREATE] user=%s id=%s", key, lead["id"])
+    return jsonify({"ok": True, "lead": lead}), 201
 
 # --- Update ONE lead
-@app.route('/api/leads/<lead_id>', methods=['PUT'])
-def update_lead(lead_id):
-    body = request.get_json(force=True) or {}
-    user_email = (body.get("user_email") or request.args.get("user_email") or "").strip().lower()
-    if not user_email:
-        return jsonify({"error": "user_email required"}), 400
-
-    patch = body.get("lead") or {}
-    if not isinstance(patch, dict):
-        return jsonify({"error": "lead must be an object"}), 400
-
-    updated = None
-    with _file_lock("leads"):
-        db = load_leads() or {}
-        arr = list(db.get(user_email, []) or [])
-        for i, ld in enumerate(arr):
-            if str(ld.get("id")) == str(lead_id):
-                ld.update(patch)
-                arr[i] = ld
-                updated = ld
-                break
-        if updated is None:
-            return jsonify({"error": "Lead not found"}), 404
-        db[user_email] = arr
-        _atomic_save_json(LEADS_FILE, db)
-
-    return jsonify({"updated": True, "lead": updated}), 200
+@app.put('/api/leads/<path:user_email>/<lead_id>')
+def update_lead(user_email, lead_id):
+    key = _email_key(user_email)
+    patch = request.get_json(force=True) or {}
+    db = load_leads() or {}
+    arr = list(db.get(key, []) or [])
+    idx = _find_lead_index(arr, lead_id)
+    if idx < 0:
+        return jsonify({"error": "lead_not_found"}), 404
+    merged = {**arr[idx], **patch}
+    merged = _ensure_lead_defaults(merged)
+    arr[idx] = merged
+    db[key] = arr
+    save_leads(db)
+    app.logger.info("[LEADS][UPDATE] user=%s id=%s", key, lead_id)
+    return jsonify({"ok": True, "lead": merged}), 200
 
 @app.get("/api/debug/storage")
 def debug_storage():
@@ -3291,46 +3326,77 @@ def debug_storage():
     }), 200
 
 # --- Delete ONE lead
-@app.route('/api/leads/<lead_id>', methods=['DELETE'])
-def delete_lead(lead_id):
-    user_email = (request.args.get("user_email") or "").strip().lower()
-    if not user_email:
-        return jsonify({"error": "user_email required"}), 400
+@app.delete('/api/leads/<path:user_email>/<lead_id>')
+def delete_lead(user_email, lead_id):
+    key = _email_key(user_email)
+    db = load_leads() or {}
+    arr = list(db.get(key, []) or [])
+    before = len(arr)
+    arr = [l for l in arr if str(l.get("id")) != str(lead_id)]
+    db[key] = arr
+    save_leads(db)
+    app.logger.info("[LEADS][DELETE] user=%s id=%s removed=%d", key, lead_id, before - len(arr))
+    return jsonify({"deleted": before - len(arr)}), 200
 
-    with _file_lock("leads"):
-        db = load_leads() or {}
-        arr = list(db.get(user_email, []) or [])
-        before = len(arr)
-        arr = [ld for ld in arr if str(ld.get("id")) != str(lead_id)]
-        db[user_email] = arr
-        _atomic_save_json(LEADS_FILE, db)
-        deleted = before - len(arr)
-
-    return jsonify({"deleted": deleted}), 200
+@app.post('/api/leads/<path:user_email>/<lead_id>/notes')
+def add_lead_note(user_email, lead_id):
+    key = _email_key(user_email)
+    body = request.get_json(force=True) or {}
+    text = (body.get("text") or body.get("note") or "").strip()
+    if not text:
+        return jsonify({"error": "note text required"}), 400
+    db = load_leads() or {}
+    arr = list(db.get(key, []) or [])
+    idx = _find_lead_index(arr, lead_id)
+    if idx < 0:
+        return jsonify({"error": "lead_not_found"}), 404
+    lead = dict(arr[idx])
+    notes = list(lead.get("notes") or [])
+    note_obj = {"id": f"nt_{os.urandom(4).hex()}", "text": text, "time": datetime.datetime.utcnow().isoformat() + "Z"}
+    notes.append(note_obj)
+    lead["notes"] = notes
+    arr[idx] = lead
+    db[key] = arr
+    save_leads(db)
+    app.logger.info("[LEADS][NOTE] user=%s id=%s note=%s", key, lead_id, note_obj["id"])
+    return jsonify({"ok": True, "note": note_obj, "lead_id": str(lead_id)}), 201
 
 # --- Bulk save (kept for backward compatibility)
-@app.route('/api/leads/<path:user_email>', methods=['POST'])
-def save_user_leads(user_email):
-    user_email = _get_user_email_from_query_or_path(user_email)
-    data = request.get_json(force=True) or {}
-    leads = data.get("leads", [])
-    if not isinstance(leads, list):
+@app.post('/api/leads/<path:user_email>')
+def bulk_upsert_leads(user_email):
+    key = _email_key(user_email)
+    payload = request.get_json(force=True) or {}
+    incoming = payload.get("leads")
+    if incoming is None:
+        return jsonify({"error": "leads array required"}), 400
+    if not isinstance(incoming, list):
         return jsonify({"error": "leads must be a list"}), 400
-
-    now_iso = datetime.datetime.utcnow().isoformat() + "Z"
-    for lead in leads:
-        lead.setdefault("id", _new_id())
-        lead.setdefault("createdAt", now_iso)
-        lead.setdefault("last_contacted", lead.get("createdAt", now_iso))
-
-    with _file_lock("leads"):
+    # PROTECT AGAINST ACCIDENTAL WIPE
+    if len(incoming) == 0:
+        app.logger.warning("[LEADS][BULK] ignored EMPTY payload for user=%s (protecting data)", key)
         db = load_leads() or {}
-        db[user_email] = leads
-        _atomic_save_json(LEADS_FILE, db)
+        return jsonify({"ok": True, "leads": _decorate_and_fix_leads_for_user(key, db.get(key, []))}), 200
 
-    # decorate on the way out
-    out = _decorate_and_fix_leads_for_user(user_email, leads)
-    return jsonify({"message": "Leads updated", "leads": out}), 200
+    db = load_leads() or {}
+    arr = list(db.get(key, []) or [])
+    idx_by_id = {str(x.get("id")): i for i, x in enumerate(arr) if x.get("id")}
+    idx_by_email = {str(x.get("email", "")).lower(): i for i, x in enumerate(arr) if x.get("email")}
+    upserted = 0
+    for raw in incoming:
+        cand = _ensure_lead_defaults(raw)
+        pos = idx_by_id.get(str(cand["id"]))
+        if pos is None:
+            pos = idx_by_email.get(str(cand.get("email","")).lower())
+        if pos is not None:
+            arr[pos] = {**arr[pos], **cand}
+        else:
+            arr.append(cand)
+        upserted += 1
+    db[key] = arr
+    save_leads(db)
+    app.logger.info("[LEADS][BULK] user=%s upserted=%d total=%d", key, upserted, len(arr))
+    return jsonify({"ok": True, "leads": _decorate_and_fix_leads_for_user(key, arr)}), 200
+
 
 # --- Mark contacted "now"
 @app.route('/api/leads/<path:user_email>/<lead_id>/contacted', methods=['POST'])
