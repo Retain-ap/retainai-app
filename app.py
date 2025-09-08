@@ -2968,66 +2968,207 @@ if "automations" not in app.blueprints:
     app.register_blueprint(automations_bp, url_prefix="/api/automations")
 
 # ----------------------------
-# Leads CRUD + status coloring
+# Leads CRUD + status coloring (robust)
 # ----------------------------
-@app.get('/api/leads/<user_email>')
-def get_leads(user_email):
-    leads_by_user = load_leads()
-    leads = leads_by_user.get(user_email, [])
-    users = load_users()
-    user = users.get(user_email)
-    business_type = (user.get("business", "") if user else "").lower()
-    interval = BUSINESS_TYPE_INTERVALS.get(business_type, 14)
-    now = datetime.datetime.utcnow()
-    updated_leads = []
-    for lead in leads:
-        last_contacted = lead.get("last_contacted") or lead.get("createdAt")
-        try:
-            last_dt = datetime.datetime.fromisoformat(last_contacted.replace("Z", ""))
-            days_since = (now - last_dt).days
-        except Exception:
-            days_since = 0
-        if days_since > interval + 2:
-            status = "cold";   status_color = "#e66565"
-        elif interval <= days_since <= interval + 2:
-            status = "warning"; status_color = "#f7cb53"
-        else:
-            status = "active";  status_color = "#1bc982"
-        lead["status"] = status
-        lead["status_color"] = status_color
-        lead["days_since_contact"] = days_since
-        updated_leads.append(lead)
-    return jsonify({"leads": updated_leads}), 200
+from uuid import uuid4
+from urllib.parse import unquote
 
-@app.post('/api/leads/<user_email>')
-def save_user_leads(user_email):
-    data = request.json or {}
-    leads = data.get("leads", [])
-    if not isinstance(leads, list):
-        return jsonify({"error": "Leads must be a list"}), 400
-    now = datetime.datetime.utcnow().isoformat() + "Z"
-    leads_by_user = load_leads()
-    for lead in leads:
-        if not lead.get("last_contacted"):
-            lead["last_contacted"] = lead.get("createdAt") or now
-    leads_by_user[user_email] = leads
-    save_leads(leads_by_user)
-    return jsonify({"message": "Leads updated", "leads": leads}), 200
+def _email_key(s: str) -> str:
+    return (unquote(s or "").strip().lower())
 
-@app.post('/api/leads/<user_email>/<lead_id>/contacted')
-def mark_lead_contacted(user_email, lead_id):
-    leads_by_user = load_leads()
-    leads = leads_by_user.get(user_email, [])
-    updated = False
-    for lead in leads:
-        if str(lead.get("id")) == str(lead_id):
-            lead["last_contacted"] = datetime.datetime.utcnow().isoformat() + "Z"
-            updated = True
-    if updated:
-        save_leads(leads_by_user)
-        return jsonify({"message": "Lead marked as contacted.", "lead_id": lead_id}), 200
+def _now_iso() -> str:
+    return datetime.datetime.utcnow().isoformat() + "Z"
+
+def _normalize_phone(s: str) -> str:
+    # Use your existing _norm_wa if present; otherwise fallback
+    try:
+        return _norm_wa(s)
+    except Exception:
+        import re, os
+        d = re.sub(r"\D", "", s or "")
+        cc = (os.getenv("DEFAULT_COUNTRY_CODE") or "1").strip()
+        return (cc + d) if len(d) == 10 and cc.isdigit() else d
+
+def _assign_lead_defaults(lead: dict, now_iso: str) -> dict:
+    ld = dict(lead or {})
+    if not ld.get("id"):
+        ld["id"] = uuid4().hex
+    # normalize names/fields you use elsewhere
+    if ld.get("email"):
+        ld["email"] = ld["email"].strip().lower()
+    # Keep a created timestamp if not present
+    if not (ld.get("createdAt") or ld.get("created_at")):
+        ld["createdAt"] = now_iso
+    # Ensure last_contacted exists (your UI depends on it)
+    if not ld.get("last_contacted"):
+        ld["last_contacted"] = ld.get("createdAt") or ld.get("created_at") or now_iso
+    # Canonical phone/WhatsApp digits for matching
+    if ld.get("phone"):
+        ld["phone_norm"] = _normalize_phone(ld.get("phone"))
+    if ld.get("whatsapp"):
+        ld["wa_norm"] = _normalize_phone(ld.get("whatsapp"))
+    return ld
+
+def _status_enrich(lead: dict, business_type: str, now_dt: datetime.datetime) -> dict:
+    interval = BUSINESS_TYPE_INTERVALS.get((business_type or "").lower(), 14)
+    last_contacted = lead.get("last_contacted") or lead.get("createdAt") or lead.get("created_at")
+    try:
+        last_dt = datetime.datetime.fromisoformat(str(last_contacted).replace("Z", ""))
+        days_since = (now_dt - last_dt).days
+    except Exception:
+        days_since = 0
+    if days_since > interval + 2:
+        status = "cold";   color = "#e66565"
+    elif interval <= days_since <= interval + 2:
+        status = "warning"; color = "#f7cb53"
     else:
+        status = "active";  color = "#1bc982"
+    lead["status"] = status
+    lead["status_color"] = color
+    lead["days_since_contact"] = days_since
+    return lead
+
+def _merge_leads(existing: list[dict], incoming: list[dict]) -> list[dict]:
+    """
+    Merge on (id) or email or normalized phone/wa. Prefer incoming values, keep ids.
+    """
+    by_id = {str(x.get("id")): x for x in existing if x.get("id")}
+    by_email = {(x.get("email") or "").lower(): x for x in existing if x.get("email")}
+    by_phone = {x.get("phone_norm"): x for x in existing if x.get("phone_norm")}
+    by_wa    = {x.get("wa_norm"): x for x in existing if x.get("wa_norm")}
+
+    merged = list(existing)  # start with existing objects (preserve references)
+    def _update(dst: dict, src: dict):
+        # copy simple fields from src onto dst (but keep dst.id)
+        keep_id = dst.get("id")
+        dst.update(src)
+        dst["id"] = keep_id
+
+    for raw in incoming:
+        inc = dict(raw)
+        key_id = str(inc.get("id") or "")
+        key_email = (inc.get("email") or "").lower()
+        key_phone = inc.get("phone_norm")
+        key_wa    = inc.get("wa_norm")
+
+        target = None
+        if key_id and key_id in by_id:
+            target = by_id[key_id]
+        elif key_email and key_email in by_email:
+            target = by_email[key_email]
+        elif key_phone and key_phone in by_phone:
+            target = by_phone[key_phone]
+        elif key_wa and key_wa in by_wa:
+            target = by_wa[key_wa]
+
+        if target is None:
+            merged.append(inc)
+            if inc.get("id"):          by_id[str(inc["id"])] = inc
+            if key_email:              by_email[key_email]    = inc
+            if key_phone:              by_phone[key_phone]    = inc
+            if key_wa:                 by_wa[key_wa]          = inc
+        else:
+            _update(target, inc)
+    return merged
+
+# GET: always decode + lowercase the bucket key and enrich status
+@app.route('/api/leads/<path:user_email>', methods=['GET'])
+def get_leads(user_email):
+    bucket = _email_key(user_email)
+    leads_by_user = load_leads()
+    leads = [dict(x) for x in leads_by_user.get(bucket, [])]
+
+    users = load_users()
+    u = users.get(bucket)
+    biz = (u.get("business", "") if u else "").lower()
+
+    now = datetime.datetime.utcnow()
+    out = []
+    for ld in leads:
+        # Backfill defaults if older records are missing them
+        if not ld.get("last_contacted"):
+            ld["last_contacted"] = ld.get("createdAt") or ld.get("created_at") or _now_iso()
+        if ld.get("phone") and not ld.get("phone_norm"):
+            ld["phone_norm"] = _normalize_phone(ld.get("phone"))
+        if ld.get("whatsapp") and not ld.get("wa_norm"):
+            ld["wa_norm"] = _normalize_phone(ld.get("whatsapp"))
+        out.append(_status_enrich(ld, biz, now))
+
+    return jsonify({"leads": out}), 200
+
+# POST: accepts {"leads":[...] } OR a single lead object. Assign ids, merge, persist.
+@app.route('/api/leads/<path:user_email>', methods=['POST'])
+def save_user_leads(user_email):
+    bucket = _email_key(user_email)
+    payload = request.get_json(force=True, silent=True) or {}
+
+    if isinstance(payload, dict) and "leads" in payload and isinstance(payload["leads"], list):
+        incoming = payload["leads"]
+    else:
+        # accept a single lead object too
+        incoming = [payload] if isinstance(payload, dict) else []
+
+    if not incoming:
+        return jsonify({"error": "No leads provided"}), 400
+
+    now_iso = _now_iso()
+    normalized_incoming = []
+    for ld in incoming:
+        ld = _assign_lead_defaults(ld, now_iso)
+        normalized_incoming.append(ld)
+
+    db = load_leads()
+    existing = [dict(x) for x in db.get(bucket, [])]
+    merged = _merge_leads(existing, normalized_incoming)
+
+    db[bucket] = merged
+    save_leads(db)
+
+    return jsonify({"message": "Leads upserted", "count": len(normalized_incoming), "leads": merged}), 200
+
+# Mark contacted by ID OR by email (fallback), still using normalized bucket key
+@app.route('/api/leads/<path:user_email>/<lead_id>/contacted', methods=['POST'])
+def mark_lead_contacted(user_email, lead_id):
+    bucket = _email_key(user_email)
+    db = load_leads()
+    arr = db.get(bucket, [])
+    if not arr:
+        return jsonify({"error": "No leads for this user"}), 404
+
+    lead_id_str = str(lead_id)
+    found = False
+
+    # Try by id
+    for lead in arr:
+        if str(lead.get("id")) == lead_id_str:
+            lead["last_contacted"] = _now_iso()
+            found = True
+            break
+
+    # Fallback: if "lead_id" looks like an email, try by email
+    if not found and "@" in lead_id_str:
+        lid_email = lead_id_str.strip().lower()
+        for lead in arr:
+            if (lead.get("email") or "").lower() == lid_email:
+                lead["last_contacted"] = _now_iso()
+                found = True
+                break
+
+    # Fallback 2: phone/wa match
+    if not found:
+        norm = _normalize_phone(lead_id_str)
+        for lead in arr:
+            if lead.get("phone_norm") == norm or lead.get("wa_norm") == norm:
+                lead["last_contacted"] = _now_iso()
+                found = True
+                break
+
+    if not found:
         return jsonify({"error": "Lead not found."}), 404
+
+    db[bucket] = arr
+    save_leads(db)
+    return jsonify({"message": "Lead marked as contacted.", "lead_id": lead_id_str}), 200
 
 # ----------------------------
 # Notifications API
