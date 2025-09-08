@@ -437,6 +437,50 @@ def check_for_lead_reminders():
             except Exception as e:
                 app.logger.warning("[WARN] follow-up notifier error: %s", e)
 
+# ---- Leads storage integrity (run at import) ----
+def _migrate_lowercase_leads_keys():
+    """Collapse all email keys to lowercase so FE lookups always find the same bucket."""
+    db = load_leads() or {}
+    lower = {}
+    changed = False
+    for k, v in db.items():
+        lk = (k or "").strip().lower()
+        if lk in lower:
+            # merge arrays if duplicates exist under different casing
+            lower[lk].extend(v or [])
+            changed = True
+        else:
+            lower[lk] = list(v or [])
+        if lk != k:
+            changed = True
+    if changed:
+        app.logger.info("[LEADS] migrated email keys to lowercase; saving %d users", len(lower))
+        save_leads(lower)
+
+def _ensure_data_files_exist():
+    for p, default in [
+        (LEADS_FILE, {}),
+        (USERS_FILE, {}),
+        (NOTIFICATIONS_FILE, {}),
+        (APPOINTMENTS_FILE, {}),
+        (CHAT_FILE, {}),
+        (STATUS_FILE, {}),
+        (FILE_AUTOMATIONS, {"users": {}}),
+        (FILE_STATE, {}),
+        (FILE_NOTIFICATIONS, {"notifications": []}),
+        (FILE_USERS, {"users": {}}),
+    ]:
+        if not os.path.exists(p):
+            app.logger.info("[BOOT] creating missing %s", p)
+            save_json(p, default)
+
+# run once at import
+_ensure_data_files_exist()
+_migrate_lowercase_leads_keys()
+app.logger.info("[BOOT] DATA_DIR=%s  leads.json=%s bytes=%s",
+                DATA_DIR, LEADS_FILE,
+                (os.path.exists(LEADS_FILE) and os.path.getsize(LEADS_FILE)) or 0)
+
 def send_birthday_greetings():
     leads_by_user = load_leads()
     users_by_email = load_users()
@@ -3238,6 +3282,22 @@ def update_lead(lead_id):
         _atomic_save_json(LEADS_FILE, db)
 
     return jsonify({"updated": True, "lead": updated}), 200
+
+@app.get("/api/debug/storage")
+def debug_storage():
+    leads = load_leads() or {}
+    try:
+        keys = sorted(list(leads.keys()))
+    except Exception:
+        keys = []
+    return jsonify({
+        "DATA_DIR": DATA_DIR,
+        "files": {
+            "leads.json": {"exists": os.path.exists(LEADS_FILE), "size": (os.path.getsize(LEADS_FILE) if os.path.exists(LEADS_FILE) else 0)},
+            "users.json": {"exists": os.path.exists(USERS_FILE), "size": (os.path.getsize(USERS_FILE) if os.path.exists(USERS_FILE) else 0)},
+        },
+        "lead_owner_keys": keys[:50],  # show which emails have buckets
+    }), 200
 
 # --- Delete ONE lead
 @app.route('/api/leads/<lead_id>', methods=['DELETE'])
