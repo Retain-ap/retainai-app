@@ -49,13 +49,12 @@ ALLOWED_ORIGINS = [o.strip().rstrip("/") for o in _raw_origins.split(",") if o a
 CORS(
     app,
     supports_credentials=True,
-    resources={
-        r"/api/*": {
-            "origins": ALLOWED_ORIGINS,
-            "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-            "allow_headers": ["Content-Type", "Authorization", "X-User-Email"],
-        }
-    },
+    resources={r"/api/*": {"origins": [
+        "https://app.retainai.ca",
+        "https://retainai-app.onrender.com",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000"
+    ]}}
 )
 
 # Disable Flask-APScheduler HTTP API so it doesn’t add routes at runtime
@@ -94,6 +93,50 @@ DATA_ROOT = (
 )
 os.makedirs(DATA_ROOT, exist_ok=True)
 print(f"[BOOT] DATA_ROOT = {DATA_ROOT}")
+
+# ---- Safe data bootstrap (idempotent) ----
+import os, json, shutil, pathlib, datetime, uuid
+
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+DATA_ROOT = os.getenv("DATA_ROOT", os.path.join(BASE_DIR, "data"))
+os.makedirs(DATA_ROOT, exist_ok=True)
+
+def _safe_seed(src_rel, dst_rel, empty_factory):
+    src = os.path.join(BASE_DIR, src_rel)
+    dst = os.path.join(DATA_ROOT, dst_rel)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+
+    if os.path.exists(dst):
+        print(f"[DATA BOOT] {dst_rel}: SKIP (exists)")
+        return
+
+    if os.path.exists(src):
+        shutil.copy2(src, dst)
+        print(f"[DATA BOOT] copied {src_rel} -> {dst_rel}")
+        return
+
+    # create empty if no seed is present
+    with open(dst, "w", encoding="utf-8") as f:
+        json.dump(empty_factory(), f, indent=2, ensure_ascii=False)
+    print(f"[DATA BOOT] created empty {dst_rel}")
+
+def bootstrap_data_files():
+    _safe_seed("leads.json",          "leads.json",          lambda: {})
+    _safe_seed("notifications.json",  "notifications.json",  lambda: {"notifications": {}})
+    _safe_seed("appointments.json",   "appointments.json",   lambda: {})
+    # ICS dir
+    ics_src = os.path.join(BASE_DIR, "ics_files")
+    ics_dst = os.path.join(DATA_ROOT, "ics_files")
+    if not os.path.exists(ics_dst):
+        if os.path.exists(ics_src):
+            shutil.copytree(ics_src, ics_dst)
+            print(f"[DATA BOOT] ICS copied to {ics_dst}")
+        else:
+            os.makedirs(ics_dst, exist_ok=True)
+            print(f"[DATA BOOT] ICS dir created at {ics_dst}")
+
+# call this once, early, before load_* helpers are used
+bootstrap_data_files()
 
 # JSON/state files in DATA_ROOT
 LEADS_FILE         = os.path.join(DATA_ROOT, "leads.json")
@@ -425,6 +468,222 @@ def leads_get(user_email):
             status, color = "active", "#1bc982"
         out.append({**lead, "status": status, "status_color": color, "days_since_contact": days})
     return jsonify({"leads": out}), 200
+
+# ========== PERSISTENT LEADS (robust) ==========
+def _ukey(email: str) -> str:
+    return (email or "").strip().lower()
+
+def _read_json_file(path, default):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+def _write_json_file(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
+
+LEADS_FILE = os.path.join(DATA_ROOT, "leads.json")
+
+def load_leads_safe():
+    return _read_json_file(LEADS_FILE, {})
+
+def save_leads_safe(obj):
+    _write_json_file(LEADS_FILE, obj)
+
+def _normalize_lead(l: dict, owner_key: str, now_iso: str) -> dict:
+    out = dict(l or {})
+    out.setdefault("id", out.get("id") or str(uuid.uuid4()))
+    out.setdefault("owner", owner_key)
+    out.setdefault("name", out.get("name") or out.get("email") or "")
+    out.setdefault("tags", out.get("tags") or [])
+    out.setdefault("notes", out.get("notes") or "")
+    out.setdefault("createdAt", out.get("createdAt") or now_iso)
+    out.setdefault("last_contacted", out.get("last_contacted") or out.get("createdAt") or now_iso)
+    out.setdefault("wa_opt_out", bool(out.get("wa_opt_out", False)))
+    return out
+
+@app.route('/api/leads/<user_email>', methods=['GET'], endpoint='leads_get_v2')
+def leads_get_v2(user_email):
+    user_key = _ukey(user_email)
+    db = load_leads_safe()
+    leads = db.get(user_key, []) or []
+
+    # Optional status coloring (safe if missing BUSINESS_TYPE_INTERVALS)
+    try:
+        users = load_users()
+        user = users.get(user_key) or {}
+        business_type = (user.get("business", "") or "").lower()
+        interval = BUSINESS_TYPE_INTERVALS.get(business_type, 14) if 'BUSINESS_TYPE_INTERVALS' in globals() else 14
+    except Exception:
+        interval = 14
+
+    now = datetime.datetime.utcnow()
+    out = []
+    for lead in leads:
+        last_contacted = lead.get("last_contacted") or lead.get("createdAt")
+        try:
+            last_dt = datetime.datetime.fromisoformat((last_contacted or "").replace("Z", ""))
+            days_since = (now - last_dt).days
+        except Exception:
+            days_since = 0
+
+        if days_since > interval + 2:
+            status, color = "cold", "#e66565"
+        elif interval <= days_since <= interval + 2:
+            status, color = "warning", "#f7cb53"
+        else:
+            status, color = "active", "#1bc982"
+
+        lead.setdefault("notes", "")
+        lead.setdefault("tags", [])
+        lead["status"] = status
+        lead["status_color"] = color
+        lead["days_since_contact"] = days_since
+        out.append(lead)
+
+    return jsonify({"leads": out}), 200
+
+@app.route('/api/leads/<user_email>', methods=['POST'], endpoint='leads_save_v2')
+def leads_save_v2(user_email):
+    """
+    Safe save:
+      - Default behavior = MERGE by id (no deletions).
+      - Set replace=true to fully replace the list.
+      - Set delete_missing=true to remove items not present in payload (only honored when replace=true).
+      - Empty payload [] is IGNORED unless allow_empty=true.
+    """
+    user_key = _ukey(user_email)
+    payload = request.get_json(force=True) or {}
+
+    if "leads" not in payload:
+        return jsonify({"error": "Field 'leads' is required"}), 400
+    incoming = payload.get("leads")
+    if not isinstance(incoming, list):
+        return jsonify({"error": "Leads must be a list"}), 400
+
+    if len(incoming) == 0 and not bool(payload.get("allow_empty", False)):
+        current = load_leads_safe().get(user_key, [])
+        return jsonify({"message": "ignored empty save", "leads": current}), 200
+
+    replace = bool(payload.get("replace", False))
+    delete_missing = bool(payload.get("delete_missing", False)) and replace
+    now_iso = datetime.datetime.utcnow().isoformat() + "Z"
+
+    db = load_leads_safe()
+    existing = db.get(user_key, []) or []
+
+    if replace:
+        # either full replace, or replace + delete_missing (same outcome here)
+        normalized = [_normalize_lead(x, user_key, now_iso) for x in incoming]
+        db[user_key] = normalized
+        save_leads_safe(db)
+        return jsonify({"message": "Leads updated", "leads": normalized}), 200
+
+    # MERGE by id (default)
+    by_id = {str(x.get("id")): x for x in existing if x.get("id")}
+    # also map by unique email/phone for first-time adds without id
+    by_email = { (x.get("email") or "").strip().lower(): x for x in existing if x.get("email") }
+    by_phone = { (x.get("phone") or x.get("whatsapp") or "").strip(): x for x in existing if (x.get("phone") or x.get("whatsapp")) }
+
+    for raw in incoming:
+        n = _normalize_lead(raw, user_key, now_iso)
+        lid = str(n.get("id"))
+        if lid and lid in by_id:
+            by_id[lid].update(n)
+            continue
+        em = (n.get("email") or "").strip().lower()
+        ph = (n.get("phone") or n.get("whatsapp") or "").strip()
+        target = None
+        if em and em in by_email:
+            target = by_email[em]
+        elif ph and ph in by_phone:
+            target = by_phone[ph]
+        if target:
+            target.update(n)
+        else:
+            existing.append(n)
+            by_id[n["id"]] = n
+            if em: by_email[em] = n
+            if ph: by_phone[ph] = n
+
+    db[user_key] = existing
+    save_leads_safe(db)
+    return jsonify({"message": "Leads merged", "leads": existing}), 200
+
+@app.route('/api/leads/<user_email>/upsert', methods=['POST'], endpoint='lead_upsert_v1')
+def lead_upsert_v1(user_email):
+    """Upsert a single lead without sending/overwriting the entire list."""
+    user_key = _ukey(user_email)
+    item = request.get_json(force=True) or {}
+    now_iso = datetime.datetime.utcnow().isoformat() + "Z"
+
+    if not isinstance(item, dict):
+        return jsonify({"error": "Body must be a lead object"}), 400
+
+    db = load_leads_safe()
+    arr = db.get(user_key, []) or []
+
+    n = _normalize_lead(item, user_key, now_iso)
+    lid = str(n.get("id"))
+    matched = False
+
+    for i, ld in enumerate(arr):
+        if str(ld.get("id")) == lid:
+            arr[i] = {**ld, **n}
+            matched = True
+            break
+
+    if not matched:
+        # try email/phone
+        for i, ld in enumerate(arr):
+            same_email = (ld.get("email") or "").strip().lower() and (ld.get("email") or "").strip().lower() == (n.get("email") or "").strip().lower()
+            same_phone = (ld.get("phone") or ld.get("whatsapp") or "") and (ld.get("phone") or ld.get("whatsapp") or "") == (n.get("phone") or n.get("whatsapp") or "")
+            if same_email or same_phone:
+                arr[i] = {**ld, **n}
+                matched = True
+                break
+
+    if not matched:
+        arr.append(n)
+
+    db[user_key] = arr
+    save_leads_safe(db)
+    return jsonify({"ok": True, "lead": n}), 200
+
+@app.route('/api/leads/<user_email>/<lead_id>/notes', methods=['POST'], endpoint='lead_update_notes_v1')
+def lead_update_notes_v1(user_email, lead_id):
+    """Update notes for a lead by id."""
+    user_key = _ukey(user_email)
+    body = request.get_json(force=True) or {}
+    notes = (body.get("notes") or "").strip()
+
+    db = load_leads_safe()
+    arr = db.get(user_key, []) or []
+    for i, ld in enumerate(arr):
+        if str(ld.get("id")) == str(lead_id):
+            ld["notes"] = notes
+            arr[i] = ld
+            db[user_key] = arr
+            save_leads_safe(db)
+            return jsonify({"ok": True}), 200
+
+    return jsonify({"error": "Lead not found"}), 404
+
+@app.route('/api/leads/<user_email>/<lead_id>', methods=['DELETE'], endpoint='lead_delete_v1')
+def lead_delete_v1(user_email, lead_id):
+    user_key = _ukey(user_email)
+    db = load_leads_safe()
+    arr = db.get(user_key, []) or []
+    new_arr = [ld for ld in arr if str(ld.get("id")) != str(lead_id)]
+    if len(new_arr) == len(arr):
+        return jsonify({"error": "Lead not found"}), 404
+    db[user_key] = new_arr
+    save_leads_safe(db)
+    return jsonify({"ok": True}), 200
 
 @app.post("/api/leads/<path:user_email>", endpoint="leads_upsert")
 def leads_upsert(user_email):
