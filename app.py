@@ -58,9 +58,6 @@ CORS(
     },
 )
 
-# Start the scheduler at import time (one per worker)
-start_scheduler_once()
-
 # Disable Flask-APScheduler HTTP API so it doesn’t add routes at runtime
 app.config.setdefault("SCHEDULER_API_ENABLED", False)
 
@@ -2375,10 +2372,15 @@ def start_scheduler_once():
         app.logger.warning("[SCHEDULER] failed to start: %s", e)
         app._scheduler_started = True  # prevent retry loop
 
-@app.before_request
-def _kick_scheduler_once():
-    if not getattr(app, "_scheduler_started", False):
-        start_scheduler_once()
+# right after: app = Flask(__name__)
+app.config.setdefault("SCHEDULER_API_ENABLED", False)
+
+# --- place this once, near the bottom of app.py, but ABOVE the __main__ guard ---
+try:
+    start_scheduler_once()
+except Exception as e:
+    # This will NOT raise, just logs if something goes wrong at import-time
+    app.logger.warning("[SCHEDULER] failed to start at import: %s", e)
 
 # -------------------------------------------------------------------
 # Local dev runner ONLY
