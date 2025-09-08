@@ -3210,9 +3210,10 @@ def _get_user_email_from_query_or_path(path_email: Optional[str] = None) -> str:
 # --- List (both forms supported)
 @app.route('/api/leads', methods=['GET'])
 def list_leads_qs():
-    user_email = _get_user_email_from_query_or_path()
+    user_email = (request.args.get("user_email") or "").strip().lower()
     if not user_email:
         return jsonify({"error": "user_email required"}), 400
+    app.logger.info("[LEADS][LIST] user=%s", user_email)
     leads_by_user = load_leads() or {}
     leads = leads_by_user.get(user_email, [])
     leads = _decorate_and_fix_leads_for_user(user_email, leads)
@@ -3233,25 +3234,15 @@ def create_lead():
     user_email = (body.get("user_email") or "").strip().lower()
     if not user_email:
         return jsonify({"error": "user_email required"}), 400
-
-    # minimal fields; accept extras transparently
     lead = body.get("lead") or {}
-    if not isinstance(lead, dict):
-        return jsonify({"error": "lead must be an object"}), 400
-
     now_iso = datetime.datetime.utcnow().isoformat() + "Z"
-    lead.setdefault("id", _new_id())
+    lead.setdefault("id", f"ld_{os.urandom(6).hex()}")
     lead.setdefault("createdAt", now_iso)
     lead.setdefault("last_contacted", now_iso)
-
-    with _file_lock("leads"):
-        db = load_leads() or {}
-        arr = list(db.get(user_email, []) or [])
-        arr.append(lead)
-        db[user_email] = arr
-        _atomic_save_json(LEADS_FILE, db)
-
-    # return decorated list so FE can refresh
+    app.logger.info("[LEADS][CREATE] user=%s id=%s name=%s", user_email, lead["id"], lead.get("name"))
+    db = load_leads() or {}
+    arr = list(db.get(user_email, []) or [])
+    arr.append(lead); db[user_email] = arr; save_leads(db)
     return list_leads_qs()
 
 # --- Update ONE lead
