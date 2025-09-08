@@ -156,6 +156,32 @@ BUSINESS_TYPE_INTERVALS = {
 def healthz():
     return "ok", 200
 
+# -------- File locking & atomic writes (multi-worker safe) --------
+import fcntl
+from contextlib import contextmanager
+
+LOCK_DIR = os.path.join(DATA_DIR, ".locks")
+os.makedirs(LOCK_DIR, exist_ok=True)
+
+@contextmanager
+def _file_lock(name: str):
+    """Cross-process exclusive lock by name."""
+    path = os.path.join(LOCK_DIR, f"{name}.lock")
+    with open(path, "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+def _atomic_save_json(file_path: str, data: Any):
+    tmp = file_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, file_path)
+
 # ----------------------------
 # JSON helpers (atomic)
 # ----------------------------
@@ -172,6 +198,7 @@ def save_json(path: str, data: Any):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+        f.flush(); os.fsync(f.fileno())
     os.replace(tmp, path)
 
 def load_leads():          return load_json(LEADS_FILE, {})
@@ -190,6 +217,37 @@ def save_statuses(d):      save_json(STATUS_FILE, d)
 # ----------------------------
 # Email helpers
 # ----------------------------
+from urllib.parse import unquote
+
+def _email_bucket(s: str) -> str:
+    """Normalize user_email used in /api/leads/<user_email> routes so GET/POST land in the same bucket."""
+    return (unquote(s or "").strip().lower())
+
+def _now_iso() -> str:
+    return datetime.datetime.utcnow().isoformat() + "Z"
+
+def _normalize_phone_generic(s: str) -> str:
+    """Digits only; auto-prefix NANP 10-digit with DEFAULT_COUNTRY_CODE."""
+    try:
+        return _norm_wa(s)  # reuse your WA normalizer
+    except Exception:
+        import re
+        d = re.sub(r"\D", "", s or "")
+        cc = (DEFAULT_COUNTRY_CODE or "1").strip()
+        return (cc + d) if len(d) == 10 and cc.isdigit() else d
+
+def _assign_lead_defaults(lead: dict) -> dict:
+    ld = dict(lead or {})
+    ld.setdefault("id", os.urandom(8).hex())
+    if ld.get("email"): ld["email"] = ld["email"].strip().lower()
+    if not (ld.get("createdAt") or ld.get("created_at")):
+        ld["createdAt"] = _now_iso()
+    if not ld.get("last_contacted"):
+        ld["last_contacted"] = ld.get("createdAt") or ld.get("created_at") or _now_iso()
+    if ld.get("phone"):    ld["phone_norm"] = _normalize_phone_generic(ld.get("phone"))
+    if ld.get("whatsapp"): ld["wa_norm"]    = _normalize_phone_generic(ld.get("whatsapp"))
+    return ld
+
 def send_email_with_template(to_email, template_id, dynamic_data, subject=None, from_email=None, reply_to_email=None):
     if not SENDGRID_API_KEY:
         app.logger.warning("[SENDGRID] Missing API key; skipping send (simulated).")
@@ -1346,13 +1404,16 @@ def set_optout():
     opt_out = bool(data.get("opt_out", True))
     if not user_email or not lead_id:
         return jsonify({"error": "user_email and lead_id required"}), 400
-    leads = load_leads()
-    arr = leads.get(user_email, []) or []
-    for ld in arr:
-        if str(ld.get("id")) == str(lead_id):
-            ld["wa_opt_out"] = bool(opt_out)
-    leads[user_email] = arr
-    save_leads(leads)
+
+    with _file_lock("leads"):
+        leads = load_leads()
+        arr = leads.get(user_email, []) or []
+        for ld in arr:
+            if str(ld.get("id")) == str(lead_id):
+                ld["wa_opt_out"] = bool(opt_out)
+        leads[user_email] = arr
+        _atomic_save_json(LEADS_FILE, leads)
+
     return jsonify({"ok": True, "opt_out": opt_out}), 200
 
 @app.post('/api/whatsapp/send')
@@ -1544,13 +1605,29 @@ def debug_template_locales():
         "raw_status": r.status_code if r is not None else None
     }), 200
 
+def _wa_set_opt_out_by_waid(wa: str, opt_out: bool) -> bool:
+    """Flip wa_opt_out for any lead whose phone/whatsapp matches WA id."""
+    with _file_lock("leads"):
+        data = load_leads()
+        changed = False
+        for _, leads in (data or {}).items():
+            for ld in leads:
+                if _lead_matches_wa(ld, wa):
+                    ld["wa_opt_out"] = bool(opt_out)
+                    changed = True
+        if changed:
+            _atomic_save_json(LEADS_FILE, data)
+        return changed
+
 @app.route("/api/whatsapp/webhook", methods=["GET", "POST"])
 def whatsapp_webhook():
+    # ----- GET: verify endpoint
     if request.method == "GET":
         if request.args.get("hub.verify_token") == (WHATSAPP_VERIFY_TOKEN or ""):
             return request.args.get("hub.challenge") or "Verified", 200
         return "Invalid verification token", 403
 
+    # ----- POST: verify signature
     raw = request.get_data()
     header_sig = request.headers.get("X-Hub-Signature-256")
     if not _verify_meta_signature(raw, header_sig):
@@ -1562,73 +1639,105 @@ def whatsapp_webhook():
             for change in entry.get("changes", []):
                 value = change.get("value", {})
 
-                # delivery/read statuses
-                for status in value.get("statuses", []):
-                    statuses = load_statuses()
-                    statuses[status.get("id") or "unknown"] = {
-                        "status": status.get("status"),
-                        "timestamp": status.get("timestamp"),
-                        "recipient": status.get("recipient_id"),
-                        "errors": status.get("errors")
+                # ----- delivery/read statuses
+                for st in value.get("statuses", []):
+                    mid = st.get("id") or "unknown"
+                    rec = {
+                        "status":     st.get("status"),
+                        "timestamp":  st.get("timestamp"),
+                        "recipient":  st.get("recipient_id"),
+                        "errors":     st.get("errors"),
+                        "conversation": st.get("conversation"),
+                        "pricing":      st.get("pricing"),
                     }
-                    save_statuses(statuses)
+                    with _file_lock("statuses"):
+                        statuses = load_statuses()
+                        statuses[mid] = rec
+                        _atomic_save_json(STATUS_FILE, statuses)
 
-                # inbound messages
-                messages = value.get("messages", [])
-                contacts = value.get("contacts", [])
+                # ----- inbound messages
+                messages = value.get("messages", []) or []
+                contacts = value.get("contacts", []) or []
                 sender_waid = contacts[0].get("wa_id") if contacts else None
 
                 for m in messages:
-                    t = m.get("type")
-                    if t == "text": text = m.get("text", {}).get("body", "")
-                    elif t == "interactive": text = str(m.get("interactive"))
-                    elif t == "button": text = str(m.get("button"))
-                    else: text = f"[{t} message]"
+                    mtype = m.get("type")
+                    text = ""
 
-                    # opt-out / opt-in
+                    if mtype == "text":
+                        text = (m.get("text") or {}).get("body", "")
+
+                    elif mtype == "interactive":
+                        inter = m.get("interactive") or {}
+                        itype = inter.get("type")
+                        if itype == "button_reply":
+                            text = (inter.get("button_reply") or {}).get("title") or str(inter)
+                        elif itype == "list_reply":
+                            text = (inter.get("list_reply") or {}).get("title") or str(inter)
+                        else:
+                            text = str(inter)
+
+                    elif mtype == "button":
+                        text = (m.get("button") or {}).get("text") or str(m.get("button"))
+
+                    elif mtype in ("image", "audio", "video", "document", "sticker", "location"):
+                        text = f"[{mtype}]"
+
+                    else:
+                        text = f"[{mtype} message]"
+
+                    # ----- opt-out / opt-in keywords
                     if sender_waid and isinstance(text, str):
                         up = text.strip().upper()
                         if up in ("STOP", "UNSUBSCRIBE", "STOP ALL", "CANCEL"):
                             wa = _norm_wa(sender_waid)
-                            data = load_leads()
-                            changed = False
-                            for _, leads in (data or {}).items():
-                                for ld in leads:
-                                    if _lead_matches_wa(ld, wa):
-                                        ld["wa_opt_out"] = True
-                                        changed = True
-                            if changed: save_leads(data)
-                            try: send_wa_text(sender_waid, "You have been unsubscribed. Reply START to opt back in.")
-                            except Exception: pass
+                            if _wa_set_opt_out_by_waid(wa, True):
+                                try:
+                                    send_wa_text(sender_waid, "You have been unsubscribed. Reply START to opt back in.")
+                                except Exception:
+                                    pass
                         elif up in ("START", "UNSTOP", "SUBSCRIBE"):
                             wa = _norm_wa(sender_waid)
-                            data = load_leads()
-                            changed = False
-                            for _, leads in (data or {}).items():
-                                for ld in leads:
-                                    if _lead_matches_wa(ld, wa):
-                                        ld["wa_opt_out"] = False
-                                        changed = True
-                            if changed: save_leads(data)
-                            try: send_wa_text(sender_waid, "You are now opted back in. You can reply STOP anytime to opt out.")
-                            except Exception: pass
+                            if _wa_set_opt_out_by_waid(wa, False):
+                                try:
+                                    send_wa_text(sender_waid, "You are now opted back in. You can reply STOP anytime to opt out.")
+                                except Exception:
+                                    pass
 
-                    # save inbound to proper thread
+                    # ----- thread resolution
                     user_email = find_user_by_whatsapp(sender_waid) if sender_waid else None
-                    lead_id = find_lead_by_whatsapp(sender_waid) if sender_waid else None
-                    chats = load_chats()
-                    user_chats = (chats.get(user_email, {}) or {})
-                    arr = (user_chats.get(lead_id, []) or [])
-                    arr.append({"from": "lead", "text": text, "time": dt.utcnow().isoformat() + "Z"})
-                    user_chats[lead_id] = arr
-                    chats[user_email] = user_chats
-                    save_chats(chats)
+                    lead_id    = find_lead_by_whatsapp(sender_waid) if sender_waid else None
+
+                    # append inbound to chat (lock-safe)
+                    with _file_lock("chats"):
+                        chats = load_chats()
+                        user_chats = (chats.get(user_email, {}) or {})
+                        arr = (user_chats.get(lead_id, []) or [])
+                        arr.append({"from": "lead", "text": text, "time": dt.utcnow().isoformat() + "Z"})
+                        user_chats[lead_id] = arr
+                        chats[user_email] = user_chats
+                        _atomic_save_json(CHAT_FILE, chats)
                     _MSG_CACHE[(str(user_email or ""), str(lead_id or ""))] = {"at": dt.utcnow(), "data": arr}
+
+                    # update lead's last inbound/activity timestamps (helps 24h gate + UI)
+                    if user_email and lead_id:
+                        with _file_lock("leads"):
+                            all_leads = load_leads()
+                            lst = all_leads.get(user_email, []) or []
+                            for ld in lst:
+                                if str(ld.get("id")) == str(lead_id):
+                                    now_iso = dt.utcnow().isoformat() + "Z"
+                                    ld["last_inbound_at"] = now_iso
+                                    ld["last_activity_at"] = now_iso
+                                    break
+                            all_leads[user_email] = lst
+                            _atomic_save_json(LEADS_FILE, all_leads)
 
     except Exception as e:
         app.logger.warning("[WHATSAPP WEBHOOK] parse error: %s", e)
 
     return "OK", 200
+
 
 # ----------------------------
 # AI helpers (reply drafts)
@@ -2968,84 +3077,21 @@ if "automations" not in app.blueprints:
     app.register_blueprint(automations_bp, url_prefix="/api/automations")
 
 # ----------------------------
-# Leads CRUD + status coloring (robust)
+# Leads CRUD (lock-safe)
 # ----------------------------
-from uuid import uuid4
-from urllib.parse import unquote
-
-def _email_key(s: str) -> str:
-    return (unquote(s or "").strip().lower())
-
-def _now_iso() -> str:
-    return datetime.datetime.utcnow().isoformat() + "Z"
-
-def _normalize_phone(s: str) -> str:
-    # Use your existing _norm_wa if present; otherwise fallback
-    try:
-        return _norm_wa(s)
-    except Exception:
-        import re, os
-        d = re.sub(r"\D", "", s or "")
-        cc = (os.getenv("DEFAULT_COUNTRY_CODE") or "1").strip()
-        return (cc + d) if len(d) == 10 and cc.isdigit() else d
-
-def _assign_lead_defaults(lead: dict, now_iso: str) -> dict:
-    ld = dict(lead or {})
-    if not ld.get("id"):
-        ld["id"] = uuid4().hex
-    # normalize names/fields you use elsewhere
-    if ld.get("email"):
-        ld["email"] = ld["email"].strip().lower()
-    # Keep a created timestamp if not present
-    if not (ld.get("createdAt") or ld.get("created_at")):
-        ld["createdAt"] = now_iso
-    # Ensure last_contacted exists (your UI depends on it)
-    if not ld.get("last_contacted"):
-        ld["last_contacted"] = ld.get("createdAt") or ld.get("created_at") or now_iso
-    # Canonical phone/WhatsApp digits for matching
-    if ld.get("phone"):
-        ld["phone_norm"] = _normalize_phone(ld.get("phone"))
-    if ld.get("whatsapp"):
-        ld["wa_norm"] = _normalize_phone(ld.get("whatsapp"))
-    return ld
-
-def _status_enrich(lead: dict, business_type: str, now_dt: datetime.datetime) -> dict:
-    interval = BUSINESS_TYPE_INTERVALS.get((business_type or "").lower(), 14)
-    last_contacted = lead.get("last_contacted") or lead.get("createdAt") or lead.get("created_at")
-    try:
-        last_dt = datetime.datetime.fromisoformat(str(last_contacted).replace("Z", ""))
-        days_since = (now_dt - last_dt).days
-    except Exception:
-        days_since = 0
-    if days_since > interval + 2:
-        status = "cold";   color = "#e66565"
-    elif interval <= days_since <= interval + 2:
-        status = "warning"; color = "#f7cb53"
-    else:
-        status = "active";  color = "#1bc982"
-    lead["status"] = status
-    lead["status_color"] = color
-    lead["days_since_contact"] = days_since
-    return lead
-
-def _merge_leads(existing: list[dict], incoming: list[dict]) -> list[dict]:
-    """
-    Merge on (id) or email or normalized phone/wa. Prefer incoming values, keep ids.
-    """
-    by_id = {str(x.get("id")): x for x in existing if x.get("id")}
+def _merge_leads(existing: List[dict], incoming: List[dict]) -> List[dict]:
+    by_id    = {str(x.get("id")): x for x in existing if x.get("id")}
     by_email = {(x.get("email") or "").lower(): x for x in existing if x.get("email")}
     by_phone = {x.get("phone_norm"): x for x in existing if x.get("phone_norm")}
     by_wa    = {x.get("wa_norm"): x for x in existing if x.get("wa_norm")}
+    merged = list(existing)
 
-    merged = list(existing)  # start with existing objects (preserve references)
     def _update(dst: dict, src: dict):
-        # copy simple fields from src onto dst (but keep dst.id)
         keep_id = dst.get("id")
         dst.update(src)
         dst["id"] = keep_id
 
-    for raw in incoming:
-        inc = dict(raw)
+    for inc in incoming:
         key_id = str(inc.get("id") or "")
         key_email = (inc.get("email") or "").lower()
         key_phone = inc.get("phone_norm")
@@ -3063,112 +3109,115 @@ def _merge_leads(existing: list[dict], incoming: list[dict]) -> list[dict]:
 
         if target is None:
             merged.append(inc)
-            if inc.get("id"):          by_id[str(inc["id"])] = inc
-            if key_email:              by_email[key_email]    = inc
-            if key_phone:              by_phone[key_phone]    = inc
-            if key_wa:                 by_wa[key_wa]          = inc
+            if inc.get("id"): by_id[str(inc["id"])] = inc
+            if key_email:     by_email[key_email]    = inc
+            if key_phone:     by_phone[key_phone]    = inc
+            if key_wa:        by_wa[key_wa]          = inc
         else:
             _update(target, inc)
     return merged
 
-# GET: always decode + lowercase the bucket key and enrich status
 @app.route('/api/leads/<path:user_email>', methods=['GET'])
 def get_leads(user_email):
-    bucket = _email_key(user_email)
+    bucket = _email_bucket(user_email)
     leads_by_user = load_leads()
-    leads = [dict(x) for x in leads_by_user.get(bucket, [])]
+    leads = [dict(x) for x in (leads_by_user.get(bucket, []) or [])]
 
     users = load_users()
-    u = users.get(bucket)
-    biz = (u.get("business", "") if u else "").lower()
-
+    user = users.get(bucket)
+    business_type = (user.get("business", "") if user else "").lower()
+    interval = BUSINESS_TYPE_INTERVALS.get(business_type, 14)
     now = datetime.datetime.utcnow()
-    out = []
+
     for ld in leads:
-        # Backfill defaults if older records are missing them
-        if not ld.get("last_contacted"):
-            ld["last_contacted"] = ld.get("createdAt") or ld.get("created_at") or _now_iso()
-        if ld.get("phone") and not ld.get("phone_norm"):
-            ld["phone_norm"] = _normalize_phone(ld.get("phone"))
-        if ld.get("whatsapp") and not ld.get("wa_norm"):
-            ld["wa_norm"] = _normalize_phone(ld.get("whatsapp"))
-        out.append(_status_enrich(ld, biz, now))
+        last_contacted = ld.get("last_contacted") or ld.get("createdAt") or ld.get("created_at") or _now_iso()
+        try:
+            last_dt = datetime.datetime.fromisoformat(str(last_contacted).replace("Z", ""))
+            days_since = (now - last_dt).days
+        except Exception:
+            days_since = 0
+        if days_since > interval + 2:
+            status, status_color = "cold", "#e66565"
+        elif interval <= days_since <= interval + 2:
+            status, status_color = "warning", "#f7cb53"
+        else:
+            status, status_color = "active", "#1bc982"
+        ld["status"] = status
+        ld["status_color"] = status_color
+        ld["days_since_contact"] = days_since
 
-    return jsonify({"leads": out}), 200
+    return jsonify({"leads": leads}), 200
 
-# POST: accepts {"leads":[...] } OR a single lead object. Assign ids, merge, persist.
 @app.route('/api/leads/<path:user_email>', methods=['POST'])
 def save_user_leads(user_email):
-    bucket = _email_key(user_email)
+    bucket = _email_bucket(user_email)
     payload = request.get_json(force=True, silent=True) or {}
 
-    if isinstance(payload, dict) and "leads" in payload and isinstance(payload["leads"], list):
-        incoming = payload["leads"]
+    # Accept: {leads: [...]}, [...] or a single lead { ... }
+    if isinstance(payload, dict) and "leads" in payload:
+        incoming = payload.get("leads")
+    elif isinstance(payload, list):
+        incoming = payload
+    elif isinstance(payload, dict):
+        incoming = [payload]
     else:
-        # accept a single lead object too
-        incoming = [payload] if isinstance(payload, dict) else []
+        incoming = None
 
-    if not incoming:
-        return jsonify({"error": "No leads provided"}), 400
+    if not isinstance(incoming, list) or not incoming:
+        return jsonify({"error": "Leads must be provided as a list or object"}), 400
 
-    now_iso = _now_iso()
-    normalized_incoming = []
-    for ld in incoming:
-        ld = _assign_lead_defaults(ld, now_iso)
-        normalized_incoming.append(ld)
+    normalized = [_assign_lead_defaults(ld) for ld in incoming]
 
-    db = load_leads()
-    existing = [dict(x) for x in db.get(bucket, [])]
-    merged = _merge_leads(existing, normalized_incoming)
+    with _file_lock("leads"):
+        db = load_leads()
+        existing = [dict(x) for x in db.get(bucket, [])]
+        merged = _merge_leads(existing, normalized)
+        db[bucket] = merged
+        _atomic_save_json(LEADS_FILE, db)
 
-    db[bucket] = merged
-    save_leads(db)
+    return jsonify({"message": "Leads upserted", "count": len(normalized), "leads": merged}), 200
 
-    return jsonify({"message": "Leads upserted", "count": len(normalized_incoming), "leads": merged}), 200
-
-# Mark contacted by ID OR by email (fallback), still using normalized bucket key
 @app.route('/api/leads/<path:user_email>/<lead_id>/contacted', methods=['POST'])
 def mark_lead_contacted(user_email, lead_id):
-    bucket = _email_key(user_email)
-    db = load_leads()
-    arr = db.get(bucket, [])
-    if not arr:
-        return jsonify({"error": "No leads for this user"}), 404
+    bucket = _email_bucket(user_email)
+    lid = str(lead_id)
+    with _file_lock("leads"):
+        db = load_leads()
+        arr = db.get(bucket, [])
+        if not arr:
+            return jsonify({"error": "No leads for this user"}), 404
 
-    lead_id_str = str(lead_id)
-    found = False
-
-    # Try by id
-    for lead in arr:
-        if str(lead.get("id")) == lead_id_str:
-            lead["last_contacted"] = _now_iso()
-            found = True
-            break
-
-    # Fallback: if "lead_id" looks like an email, try by email
-    if not found and "@" in lead_id_str:
-        lid_email = lead_id_str.strip().lower()
-        for lead in arr:
-            if (lead.get("email") or "").lower() == lid_email:
-                lead["last_contacted"] = _now_iso()
+        found = False
+        # id match
+        for ld in arr:
+            if str(ld.get("id")) == lid:
+                ld["last_contacted"] = _now_iso()
                 found = True
                 break
+        # email match
+        if not found and "@" in lid:
+            e = lid.strip().lower()
+            for ld in arr:
+                if (ld.get("email") or "").lower() == e:
+                    ld["last_contacted"] = _now_iso()
+                    found = True
+                    break
+        # phone/wa match
+        if not found:
+            norm = _normalize_phone_generic(lid)
+            for ld in arr:
+                if ld.get("phone_norm") == norm or ld.get("wa_norm") == norm:
+                    ld["last_contacted"] = _now_iso()
+                    found = True
+                    break
 
-    # Fallback 2: phone/wa match
-    if not found:
-        norm = _normalize_phone(lead_id_str)
-        for lead in arr:
-            if lead.get("phone_norm") == norm or lead.get("wa_norm") == norm:
-                lead["last_contacted"] = _now_iso()
-                found = True
-                break
+        if not found:
+            return jsonify({"error": "Lead not found."}), 404
 
-    if not found:
-        return jsonify({"error": "Lead not found."}), 404
+        db[bucket] = arr
+        _atomic_save_json(LEADS_FILE, db)
 
-    db[bucket] = arr
-    save_leads(db)
-    return jsonify({"message": "Lead marked as contacted.", "lead_id": lead_id_str}), 200
+    return jsonify({"message": "Lead marked as contacted.", "lead_id": lid}), 200
 
 # ----------------------------
 # Notifications API
