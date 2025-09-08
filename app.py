@@ -3109,7 +3109,7 @@ def home():
     return jsonify({"status": "RetainAI backend running."})
 
 # ----------------------------
-# Scheduler bootstrap
+# Scheduler bootstrap  (Flask 3.x-safe)
 # ----------------------------
 def start_scheduler_once():
     if getattr(app, "_scheduler_started", False):
@@ -3117,16 +3117,22 @@ def start_scheduler_once():
     scheduler = APScheduler()
     scheduler.init_app(app)
     scheduler.start()
-    # heartbeat jobs
     scheduler.add_job(id="lead_reminder_job",      func=check_for_lead_reminders,  trigger="interval", minutes=1)
     scheduler.add_job(id="birthday_greetings_job", func=send_birthday_greetings,   trigger="cron",     hour=8)
     scheduler.add_job(id="trial_ending_soon_job",  func=send_trial_ending_soon,    trigger="cron",     hour=9)
     app.logger.info("JOBS: %s", scheduler.get_jobs())
     app._scheduler_started = True
 
-@app.before_first_request
-def _kick_scheduler():
-    start_scheduler_once()
+# Flask 3.x: use before_serving; fallback for older versions
+if hasattr(app, "before_serving"):
+    @app.before_serving
+    def _kick_scheduler():
+        start_scheduler_once()
+else:
+    @app.before_request
+    def _kick_scheduler_fallback():
+        if not getattr(app, "_scheduler_started", False):
+            start_scheduler_once()
 
 # ----------------------------
 # Local dev runner ONLY
